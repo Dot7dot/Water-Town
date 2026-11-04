@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>喝水小鎮 Water Town</title>
+  <meta name="description" content="喝水就會成長的 3D 可愛城市 · A cute 3D city that grows when you drink water" />
+  <meta name="theme-color" content="#7cc8ff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="喝水小鎮" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap" />
+  <link rel="stylesheet" href="vendor/animate.min.css" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <!-- Loading screen: a little sprout being watered + a water fact -->
+  <div id="loader" class="loader" role="status" aria-live="polite">
+    <div class="loader-art" aria-hidden="true">
+      <div class="cloud"><span></span><span></span><span></span></div>
+      <div class="rain"><i></i><i></i><i></i><i></i></div>
+      <div class="pot">
+        <div class="sprout"><b class="stem"></b><b class="leaf l"></b><b class="leaf r"></b></div>
+        <div class="pot-body"></div>
+      </div>
+    </div>
+    <div class="loader-title" id="loaderTitle">喝水小鎮</div>
+    <div class="loader-bar"><div class="loader-fill"></div></div>
+    <div class="loader-msg" id="loaderMsg">城市灌溉中…</div>
+    <button class="tip-card" id="tipCard" type="button">
+      <span class="tip-icon" id="tipIcon">💧</span>
+      <span class="tip-body">
+        <span class="tip-head" id="tipHead">你知道嗎？</span>
+        <span class="tip-text" id="tipText"></span>
+        <span class="tip-next" id="tipNext">點一下看下一則</span>
+      </span>
+    </button>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-logo" aria-hidden="true"></span>
+        <span class="brand-name" data-i18n="appName"></span>
+      </div>
+      <div class="top-actions">
+        <div class="coin-pill" id="coinPill"><span id="coinIcon"></span><span id="coinVal">0</span></div>
+        <button class="chip lang-btn" id="langBtn" type="button" aria-label="Language">EN</button>
+        <button class="icon-btn" id="settingsBtn" type="button" aria-label="Settings"></button>
+      </div>
+    </header>
+
+    <main class="views">
+      <section id="view-city" class="view active" aria-label="City">
+        <div id="cityCanvas" class="city-canvas"></div>
+        <div class="hud">
+          <div class="hud-card glass" id="hudCard"></div>
+          <div class="thirst-banner animate__animated" id="thirstBanner" hidden></div>
+        </div>
+        <div class="fab-col">
+          <button class="fab" id="cameraBtn" type="button"></button>
+          <button class="fab" id="rotLBtn" type="button"></button>
+          <button class="fab" id="rotRBtn" type="button"></button>
+          <button class="fab" id="bagBtn" type="button"><span class="fab-badge" id="bagBadge" hidden></span></button>
+        </div>
+        <div class="info-card glass animate__animated" id="infoCard" hidden></div>
+        <div class="place-bar glass animate__animated" id="placeBar" hidden></div>
+        <button class="drink-btn" id="drinkBtn" type="button"></button>
+      </section>
+
+      <section id="view-diary" class="view" aria-label="Diary"></section>
+      <section id="view-shop" class="view" aria-label="Shop"></section>
+    </main>
+
+    <nav class="tabbar" id="tabbar">
+      <button class="tab active" data-tab="city" type="button"></button>
+      <button class="tab" data-tab="diary" type="button"><span class="tab-dot" id="diaryDot" hidden></span></button>
+      <button class="tab" data-tab="shop" type="button"></button>
+    </nav>
+  </div>
+
+  <div id="layer" class="layer"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="flash" class="flash"></div>
+
+  <script type="module" src="js/main.js"></script>
+  <noscript>請開啟 JavaScript 才能使用喝水小鎮。Please enable JavaScript.</noscript>
+</body>
+</html>
