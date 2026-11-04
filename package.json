@@ -1,0 +1,12 @@
+{
+  "name": "water-town",
+  "version": "1.0.0",
+  "private": true,
+  "description": "喝水小鎮 Water Town — a cute 3D city that grows when you drink water (mobile PWA)",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node tests/game.test.mjs"
+  },
+  "license": "MIT"
+}

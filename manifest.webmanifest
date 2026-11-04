@@ -1,0 +1,18 @@
+{
+  "name": "喝水小鎮 Water Town",
+  "short_name": "喝水小鎮",
+  "description": "喝水就會成長的 3D 可愛城市 · A cute 3D city that grows when you drink water",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#d9f1ff",
+  "theme_color": "#7cc8ff",
+  "lang": "zh-Hant-TW",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
