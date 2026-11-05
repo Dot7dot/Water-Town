@@ -3,7 +3,7 @@ import * as THREE from '../vendor/three.module.min.js';
 import { RoundedBoxGeometry } from '../vendor/RoundedBoxGeometry.js';
 import { GRID, PLANT_MAP, BUILDING_MAP } from './data.js';
 import { buildPlant, buildBuilding, buildWallPlant, BUILD_SPEC, warnSprite, mat, WATER_PLANTS, STAGE_INDEX } from './models.js';
-import { buildIndex, terrainAt, plantStage, plantStatus } from './game.js';
+import { buildIndex, terrainAt, plantStage, plantStatus, landRect, nextLandCells } from './game.js';
 
 const WATER_Y = -0.08;
 const H = GRID / 2;
@@ -46,10 +46,11 @@ export class CityScene {
     this.scene = new THREE.Scene();
     this.scene.background = this.skyTexture();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
-    this.target = new THREE.Vector3(-0.5, 0, -0.5); // nudge the island below the HUD card
+    this.target = new THREE.Vector3(0, 0, 0);
+    this.targetGoal = this.target.clone();
     this.theta = Math.PI / 4; this.thetaGoal = this.theta;
     this.zoom = 1; this.zoomGoal = 1;
-    this.viewH = 11;
+    this.viewH = 11; this.viewHGoal = 11;
 
     const hemi = new THREE.HemisphereLight('#dff1ff', '#ffe6cc', 1.25);
     this.scene.add(hemi);
@@ -103,45 +104,110 @@ export class CityScene {
 
   /* ------------------------------------------------------- island */
   buildIsland() {
-    const tileGeo = new RoundedBoxGeometry(0.97, 0.3, 0.97, 2, 0.07);
-    const bedGeo = new RoundedBoxGeometry(1, 0.2, 1, 1, 0.02);
-    const waterGeo = new THREE.BoxGeometry(1.0, 0.1, 1.0);
+    this.tileGeo = new RoundedBoxGeometry(0.97, 0.3, 0.97, 2, 0.07);
+    this.bedGeo = new RoundedBoxGeometry(1, 0.2, 1, 1, 0.02);
+    this.waterGeo = new THREE.BoxGeometry(1.0, 0.1, 1.0);
     this.waterMat = new THREE.MeshStandardMaterial({ color: '#3fb0f0', roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.93, emissive: '#1e7fc0', emissiveIntensity: 0.18 });
-    for (let x = 0; x < GRID; x++) {
-      for (let z = 0; z < GRID; z++) {
-        const t = terrainAt(x, z);
+    this.ghostMat = new THREE.MeshBasicMaterial({ map: this.lockedTexture(), transparent: true, opacity: 0.85, depthWrite: false });
+    this.landKey = null;
+    this.landLevel = null;
+    this.rising = [];
+    this.ghostTiles = [];
+  }
+
+  lockedTexture() {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+    const x = cv.getContext('2d');
+    x.beginPath();
+    if (x.roundRect) x.roundRect(10, 10, 108, 108, 22); else x.rect(10, 10, 108, 108);
+    x.fillStyle = 'rgba(255,255,255,0.45)'; x.fill();
+    x.setLineDash([14, 10]); x.lineWidth = 7; x.strokeStyle = 'rgba(255,255,255,0.95)'; x.stroke();
+    x.setLineDash([]);
+    // tiny padlock
+    x.fillStyle = 'rgba(90,150,200,0.75)';
+    x.fillRect(50, 62, 28, 22);
+    x.lineWidth = 6; x.strokeStyle = 'rgba(90,150,200,0.75)';
+    x.beginPath(); x.arc(64, 62, 9, Math.PI, 0); x.stroke();
+    const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+
+  // (Re)build the open land, the preview of the next expansion and the floating soil base.
+  rebuildLand(state) {
+    const rect = landRect(state);
+    const key = `${(state.terrain || []).join('')}|${rect.join(',')}`;
+    if (key === this.landKey) return;
+    const grew = this.landLevel != null && state.landLevel > this.landLevel && this.landKey && this.landKey.split('|')[0] === key.split('|')[0];
+    const oldRect = this.rect;
+    this.landKey = key;
+    this.landLevel = state.landLevel;
+    this.rect = rect;
+    this.tiles.clear();
+    this.tileMeshes = [];
+    this.ghostTiles = [];
+    this.rising = [];
+    const [x0, z0, x1, z1] = rect;
+    const isNew = (x, z) => grew && oldRect && !(x >= oldRect[0] && x <= oldRect[2] && z >= oldRect[1] && z <= oldRect[3]);
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const t = terrainAt(state, x, z);
         const c = cellCenter(x, z);
+        const cell = new THREE.Group();
         if (t === 'W') {
-          const bed = new THREE.Mesh(bedGeo, mat('#4f9fd0'));
-          bed.position.set(c.x, -0.42, c.z); bed.receiveShadow = true; this.tiles.add(bed);
-          const w = new THREE.Mesh(waterGeo, this.waterMat);
+          const bed = new THREE.Mesh(this.bedGeo, mat('#4f9fd0'));
+          bed.position.set(c.x, -0.42, c.z); bed.receiveShadow = true; cell.add(bed);
+          const w = new THREE.Mesh(this.waterGeo, this.waterMat);
           w.position.set(c.x, WATER_Y - 0.05, c.z); w.receiveShadow = true;
           w.userData = { kind: 'tile', x, z };
-          this.tiles.add(w); this.tileMeshes.push(w);
+          cell.add(w); this.tileMeshes.push(w);
         } else {
-          const m = new THREE.Mesh(tileGeo, mat('#8fd16a'));
+          const m = new THREE.Mesh(this.tileGeo, mat('#8fd16a'));
           m.position.set(c.x, -0.15, c.z);
           m.receiveShadow = true;
           m.userData = { kind: 'tile', x, z, terrain: t };
-          this.tiles.add(m); this.tileMeshes.push(m);
+          cell.add(m); this.tileMeshes.push(m);
+        }
+        this.tiles.add(cell);
+        if (isNew(x, z)) {
+          const d = Math.abs(x - (x0 + x1) / 2) + Math.abs(z - (z0 + z1) / 2);
+          cell.position.y = -3; cell.scale.setScalar(0.2);
+          this.rising.push({ obj: cell, t: -0.35 - d * 0.06 });
         }
       }
     }
-    // soil base of the floating island
-    const base = new THREE.Mesh(new RoundedBoxGeometry(GRID + 0.2, 0.7, GRID + 0.2, 3, 0.25), mat('#c99566'));
-    base.position.y = -0.62; base.receiveShadow = true; this.tiles.add(base);
-    const base2 = new THREE.Mesh(new RoundedBoxGeometry(GRID - 0.6, 0.6, GRID - 0.6, 3, 0.25), mat('#a9764d'));
-    base2.position.y = -1.15; this.tiles.add(base2);
-    const base3 = new THREE.Mesh(new RoundedBoxGeometry(GRID - 2.4, 0.5, GRID - 2.4, 3, 0.22), mat('#8c6142'));
-    base3.position.y = -1.55; this.tiles.add(base3);
-    // little hanging rocks
-    for (let i = 0; i < 5; i++) {
-      const r = new THREE.Mesh(new THREE.IcosahedronGeometry(0.35 + i * 0.05, 0), mat('#9b6e4a', { flatShading: true }));
-      r.position.set(-3 + i * 1.5, -1.9 - (i % 2) * 0.3, (i % 3) - 1); this.tiles.add(r);
+    // next expansion preview
+    for (const { x, z } of nextLandCells(state)) {
+      const c = cellCenter(x, z);
+      const g = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), this.ghostMat);
+      g.rotation.x = -Math.PI / 2;
+      g.position.set(c.x, -0.06, c.z);
+      g.userData = { kind: 'tile', x, z, locked: true, phase: (x * 7 + z * 3) % 10 };
+      this.tiles.add(g); this.ghostTiles.push(g);
     }
+    // floating soil base sized to the open land
+    const w = x1 - x0 + 1; const d = z1 - z0 + 1;
+    const cx = (x0 + x1 + 1) / 2 - H; const cz = (z0 + z1 + 1) / 2 - H;
+    const slab = (bw, h, bd, y, color, r) => {
+      const ww = Math.max(0.6, bw); const dd = Math.max(0.6, bd);
+      const m = new THREE.Mesh(new RoundedBoxGeometry(ww, h, dd, 3, Math.min(r, ww / 2 - 0.01, dd / 2 - 0.01, h / 2 - 0.01)), mat(color));
+      m.position.set(cx, y, cz); m.receiveShadow = true; this.tiles.add(m);
+    };
+    slab(w + 0.2, 0.7, d + 0.2, -0.62, '#c99566', 0.25);
+    slab(w - 0.6, 0.6, d - 0.6, -1.15, '#a9764d', 0.25);
+    if (w > 2 && d > 2) slab(w - 2.2, 0.5, d - 2.2, -1.55, '#8c6142', 0.22);
+    const rocks = Math.max(2, Math.round((w + d) / 4));
+    for (let i = 0; i < rocks; i++) {
+      const r = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22 + (i % 3) * 0.08, 0), mat('#9b6e4a', { flatShading: true }));
+      const k = rocks === 1 ? 0.5 : i / (rocks - 1);
+      r.position.set(cx + (k - 0.5) * (w - 1) * 0.7, -1.7 - (i % 2) * 0.3 - (w > 2 ? 0.2 : 0), cz + ((i % 3) - 1) * (d - 1) * 0.2);
+      this.tiles.add(r);
+    }
+    for (const c of this.clouds.children) c.userData.r = Math.max(w, d) / 2 + 3.5 + (c.userData.ri || 0);
+    this.fitView(true);
   }
 
   refreshTiles(state) {
+    this.rebuildLand(state);
     const idx = buildIndex(state);
     for (const m of this.tileMeshes) {
       const { x, z, terrain } = m.userData;
@@ -165,7 +231,7 @@ export class CityScene {
         s.position.set(k * 0.6 - n * 0.3, (k % 2) * 0.2, (k % 3) * 0.2);
         g.add(s);
       }
-      g.userData = { a: (i / 5) * Math.PI * 2, r: 9 + (i % 2) * 2.5, y: -2.4 - (i % 3) * 0.7, speed: 0.02 + i * 0.004 };
+      g.userData = { a: (i / 5) * Math.PI * 2, r: 9 + (i % 2) * 2.5, ri: (i % 2) * 2.5, y: -2.4 - (i % 3) * 0.7, speed: 0.02 + i * 0.004 };
       this.clouds.add(g);
     }
   }
@@ -259,9 +325,27 @@ export class CityScene {
     this.renderer.setSize(w, h, false);
     this.canvas.style.width = '100%'; this.canvas.style.height = '100%';
     this.aspect = w / h;
-    // fit the island on narrow phone screens
-    this.viewH = this.aspect < 0.8 ? 15.5 / Math.max(this.aspect, 0.45) * 0.6 : 12;
+    this.fitView(false);
+    this.viewH = this.viewHGoal;
     this.updateCamera();
+  }
+
+  // Frame the open land: small towns are shown up close, the camera pulls back as the land grows.
+  fitView(recenter) {
+    if (!this.aspect) return;
+    const [x0, z0, x1, z1] = this.rect || [0, 0, GRID - 1, GRID - 1];
+    const w = x1 - x0 + 1; const d = z1 - z0 + 1;
+    const span = (w + d) * 0.7071 + 1.8; // isometric screen width of the land + margin
+    let vh = this.aspect < 0.8 ? span / this.aspect * (w + d > 10 ? 0.78 : 0.95) : Math.max(span / this.aspect, (w + d) * 0.45 + 3.5);
+    vh = Math.max(vh, 7);
+    this.viewHGoal = vh;
+    if (recenter) {
+      const c = new THREE.Vector3((x0 + x1 + 1) / 2 - H, 0, (z0 + z1 + 1) / 2 - H);
+      // push the land a little below the HUD card at the top of the screen
+      c.add(new THREE.Vector3(-Math.sin(this.thetaGoal), 0, -Math.cos(this.thetaGoal)).multiplyScalar(vh * 0.05));
+      this.targetGoal.copy(c);
+      this.zoomGoal = 1;
+    }
   }
 
   updateCamera() {
@@ -338,8 +422,10 @@ export class CityScene {
     const fwd = new THREE.Vector3(-Math.sin(this.theta), 0, -Math.cos(this.theta));
     this.target.addScaledVector(right, -dx * worldPerPx);
     this.target.addScaledVector(fwd, dy * worldPerPx / Math.sin(0.62) * 0.9);
-    this.target.x = Math.max(-H, Math.min(H, this.target.x));
-    this.target.z = Math.max(-H, Math.min(H, this.target.z));
+    const [x0, z0, x1, z1] = this.rect || [0, 0, GRID - 1, GRID - 1];
+    this.target.x = Math.max(x0 - H - 1, Math.min(x1 + 1 - H + 1, this.target.x));
+    this.target.z = Math.max(z0 - H - 1, Math.min(z1 + 1 - H + 1, this.target.z));
+    this.targetGoal.copy(this.target);
     this.updateCamera();
   }
 
@@ -355,7 +441,7 @@ export class CityScene {
       if (!o || !o.userData.kind) continue;
       const cell = { x: Math.floor(h.point.x + H), z: Math.floor(h.point.z + H) };
       const res = { kind: o.userData.kind, id: o.userData.id, cell, point: h.point };
-      if (o.userData.kind === 'tile') res.cell = { x: o.userData.x, z: o.userData.z };
+      if (o.userData.kind === 'tile') { res.cell = { x: o.userData.x, z: o.userData.z }; res.locked = !!o.userData.locked; }
       if (o.userData.kind === 'wallslot') { res.kind = 'wall'; res.wall = o.userData.wall; return res; }
       if (o.userData.kind === 'cellmark') { res.kind = 'tile'; res.mark = true; res.cell = { x: o.userData.x, z: o.userData.z }; return res; }
       if (o.userData.kind === 'ghost') continue;
@@ -415,7 +501,7 @@ export class CityScene {
         const p = new THREE.Mesh(g, m);
         p.rotation.x = -Math.PI / 2;
         const c = cellCenter(s.x, s.z, size);
-        const water = terrainAt(s.x, s.z) === 'W';
+        const water = terrainAt(this.state, s.x, s.z) === 'W';
         p.position.set(c.x, (water ? WATER_Y : 0) + 0.03, c.z);
         p.userData = { kind: 'cellmark', x: s.x, z: s.z };
         p.renderOrder = 2;
@@ -530,6 +616,8 @@ export class CityScene {
     let changed = false;
     if (Math.abs(this.thetaGoal - this.theta) > 0.0005) { this.theta += (this.thetaGoal - this.theta) * Math.min(1, dt * 8); changed = true; }
     if (Math.abs(this.zoomGoal - this.zoom) > 0.0005) { this.zoom += (this.zoomGoal - this.zoom) * Math.min(1, dt * 10); changed = true; }
+    if (Math.abs(this.viewHGoal - this.viewH) > 0.001) { this.viewH += (this.viewHGoal - this.viewH) * Math.min(1, dt * 3); changed = true; }
+    if (this.targetGoal.distanceToSquared(this.target) > 1e-6) { this.target.lerp(this.targetGoal, Math.min(1, dt * 3)); changed = true; }
     if (changed) this.updateCamera();
 
     this.waterMat.emissiveIntensity = 0.16 + Math.sin(t * 1.5) * 0.05;
@@ -541,6 +629,17 @@ export class CityScene {
       if (u.drip) { const k = (t * 0.8 + u.drip.phase) % 1; o.position.set(Math.cos(u.drip.a) * (0.32 + k * 0.25), 0.62 - k * k * 0.45, Math.sin(u.drip.a) * (0.32 + k * 0.25)); }
       if (u.fall) { o.position.y -= dt * u.fall; if (o.position.y < 0.02) o.position.y = 0.5; }
     }
+    for (let i = this.rising.length - 1; i >= 0; i--) {
+      const r = this.rising[i];
+      r.t += dt;
+      if (r.t < 0) continue;
+      const k = Math.min(1, r.t / 0.7);
+      const e = 1 - Math.pow(1 - k, 3);
+      r.obj.position.y = -3 * (1 - e) + Math.sin(k * Math.PI) * 0.25;
+      r.obj.scale.setScalar(0.2 + 0.8 * e);
+      if (k >= 1) { r.obj.position.y = 0; r.obj.scale.setScalar(1); this.rising.splice(i, 1); }
+    }
+    for (const g of this.ghostTiles) g.position.y = -0.06 + Math.sin(t * 1.6 + g.userData.phase) * 0.04;
     for (const s of this.markers.children) {
       s.position.y = s.userData.base + Math.abs(Math.sin(t * (s.userData.urgent ? 6 : 3.5))) * 0.12;
     }

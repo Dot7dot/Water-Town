@@ -1,5 +1,5 @@
 // Offline cache for Water Town. Bump VERSION when files change.
-const VERSION = 'wt-v1';
+const VERSION = 'wt-v2';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css', './vendor/animate.min.css',
   './vendor/three.module.min.js', './vendor/RoundedBoxGeometry.js',

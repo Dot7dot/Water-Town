@@ -1,99 +1,166 @@
 import assert from 'node:assert/strict';
 import * as G from '../js/game.js';
+import { LAND_LEVELS, LEGACY_TERRAIN, TERRAIN } from '../js/data.js';
 
 const DAY = 86400000;
-let now = new Date(2026, 10, 4, 9, 0).getTime();
-const s = G.createInitialState(now);
-assert.equal(s.plants.length, 7);
-// every starter plant sits in a valid habitat
-for (const p of s.plants) {
-  const spot = p.wall ? { wall: p.wall } : { x: p.x, z: p.z };
-  assert.ok(G.canPlacePlant(s, p.species, spot, p.id), 'starter ' + p.species);
-}
-// cactus never in river / near water; lotus only in pond; ivy only on walls
-assert.equal(G.canPlacePlant(s, 'cactus', { x: 6, z: 0 }), false, 'cactus in river');
-assert.equal(G.canPlacePlant(s, 'cactus', { x: 4, z: 3 }), false, 'cactus by river (rot)');
-assert.equal(G.canPlacePlant(s, 'cactus', { x: 0, z: 0 }), true, 'cactus on dry grass');
-assert.equal(G.canPlacePlant(s, 'waterlily', { x: 0, z: 0 }), false, 'lily on land');
-assert.equal(G.canPlacePlant(s, 'waterlily', { x: 6, z: 0 }), true, 'lily in river');
-assert.equal(G.canPlacePlant(s, 'lotus', { x: 6, z: 0 }), false, 'lotus needs a pond');
-assert.equal(G.canPlacePlant(s, 'ivy', { x: 0, z: 0 }), false, 'ivy on ground');
-assert.equal(G.canPlacePlant(s, 'palm', { x: 9, z: 9 }), false, 'palm on dry sand');
-assert.equal(G.canPlacePlant(s, 'palm', { x: 7, z: 8 }), false, 'palm off sand');
+const now = new Date(2026, 10, 4, 9, 0).getTime();
+const MAX = LAND_LEVELS.length - 1;
+const spotOf = (p) => (p.wall ? { wall: p.wall } : { x: p.x, z: p.z });
+const fullLand = (s) => { s.landLevel = MAX; return s; };
 
-// bottles + drinking
-const w = G.addBottle(s, { name: 'Big', capacity: 1000, icon: 'jug' });
-const c0 = s.coins;
-let r = G.drink(s, w.id, 'water', now, () => 0.3);
-assert.equal(r.coins, 10);
-assert.equal(s.coins, c0 + 10);
-assert.equal(r.sprouts.length, 2, 'two sprouts for 1000ml');
-r = G.drink(s, w.id, 'drink', now + 1000, () => 0.3);
-assert.equal(r.coins, 5, 'beverage gives half coins');
-// sprouted plants are valid
-for (const p of s.plants) {
-  if (p.stored) continue;
-  const spot = p.wall ? { wall: p.wall } : { x: p.x, z: p.z };
-  assert.ok(G.canPlacePlant(s, p.species, spot, p.id), 'sprout valid ' + p.species);
+/* ---------------------------------------------------- starting plot */
+{
+  const s = G.createInitialState(now);
+  assert.equal(s.landLevel, 0);
+  const [x0, z0, x1, z1] = G.landRect(s);
+  assert.equal((x1 - x0 + 1) * (z1 - z0 + 1), 6, 'starts as a 2x3 plot');
+  let water = 0;
+  for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) if (G.terrainAt(s, x, z) === 'W') water++;
+  assert.equal(water, 1, 'with exactly one small water cell');
+  for (const p of s.plants) assert.ok(G.canPlacePlant(s, p.species, spotOf(p), p.id), 'starter ' + p.species);
+  for (const b of s.buildings) assert.ok(G.isUnlocked(s, b.x, b.z), 'starter building inside the plot');
+  // nothing can be put on locked land
+  assert.equal(G.isUnlocked(s, 0, 0), false);
+  assert.equal(G.canPlacePlant(s, 'clover', { x: 0, z: 0 }), false, 'no planting on locked land');
+  assert.equal(G.canPlaceBuilding(s, 'lamp', 0, 0), false, 'no building on locked land');
+  for (const sp of G.validBuildingSpots(s, 'lamp')) assert.ok(G.isUnlocked(s, sp.x, sp.z));
+  for (const sp of G.validSeedSpots(s, now)) if (!sp.wall) assert.ok(G.isUnlocked(s, sp.x, sp.z));
+  assert.ok(G.nextLandCells(s).length === 3, 'next expansion previews 3 cells');
 }
 
-// low hydration -> dry species only
-const s2 = G.createInitialState(now);
-const small = G.addBottle(s2, { name: 's', capacity: 500, icon: 'flask' });
-s2.goal = 4000;
-for (let i = 0; i < 20; i++) { s2.sproutProgress = 500; G.drink(s2, small.id, 'drink', now + i * 25 * 3600e3, () => Math.random()); }
-const lowSpecies = [...new Set(s2.plants.slice(7).map((p) => p.species))];
-console.log('species grown with low intake:', lowSpecies.join(','));
-for (const sp of lowSpecies) assert.ok(G.PLANT_MAP[sp].tiers.some((t) => t === 'dry' || t === 'low'), 'dry-tier species ' + sp);
-assert.ok(!lowSpecies.includes('lotus') && !lowSpecies.includes('waterlily'));
+/* ---------------------------------------------------- land expansion */
+{
+  const s = G.createInitialState(now);
+  const w = G.addBottle(s, { name: 'Big', capacity: 1000, icon: 'jug' });
+  const r = G.drink(s, w.id, 'water', now, () => 0.3);
+  assert.deepEqual(r.land, { from: 0, to: 1, cells: 3 }, '1000 ml opens the first 3 cells');
+  assert.equal(G.landProgress(s).next, LAND_LEVELS[2].need);
+  // sprouts may use the freshly opened land
+  for (const p of s.plants) if (!p.wall) assert.ok(G.isUnlocked(s, p.x, p.z));
+  // beverages count half toward the land as well
+  const r2 = G.drink(s, w.id, 'drink', now + 1000);
+  assert.equal(r2.land, null);
+  // keep drinking: the land keeps growing and never shrinks
+  let t = now;
+  for (let i = 0; i < 80; i++) { t += 3 * 3600e3; G.drink(s, w.id, 'water', t); }
+  assert.equal(s.landLevel, MAX, 'whole island open after ~70 L');
+  assert.equal(G.landProgress(s).done, true);
+  const last = s.logs[s.logs.length - 1];
+  s.logs.pop();
+  G.updateLand(s);
+  assert.equal(s.landLevel, MAX, 'deleting a record never re-locks land');
+  void last;
+}
 
-// death after three dry days, survival when drinking daily
-const n = s.plants.length;
-G.processDays(s, now + 2 * DAY);
-let st = G.plantStatus(s, s.plants[0], now + 2 * DAY);
-assert.equal(st.warn, true); assert.equal(st.dead, false);
-G.processDays(s, now + 3 * DAY);
-assert.equal(G.plantStatus(s, s.plants[0], now + 3 * DAY).urgent, true);
-assert.equal(s.plants.some((p) => p.dead), false);
-G.processDays(s, now + 4 * DAY);
-assert.equal(s.plants.every((p) => p.dead), true, 'all die after 3 full dry days');
-assert.ok(s.diary[G.dayKey(now)].score > 0);
-console.log('day1 diary', s.diary[G.dayKey(now)]);
+/* ---------------------------------------------------- old saves */
+{
+  const old = G.createInitialState(now);
+  delete old.terrain; delete old.landLevel;
+  G.migrate(old);
+  assert.equal(old.landLevel, MAX, 'existing towns keep their full island');
+  assert.deepEqual(old.terrain, LEGACY_TERRAIN);
+  assert.notDeepEqual(TERRAIN, LEGACY_TERRAIN);
+}
 
-// survive with a tiny drink every day; perfect days -> bloom
-const s3 = G.createInitialState(now);
-const b3 = G.addBottle(s3, { name: 'x', capacity: 100, icon: 'cup' });
-for (let d = 0; d < 6; d++) { G.processDays(s3, now + d * DAY); G.drink(s3, b3.id, 'water', now + d * DAY); }
-G.processDays(s3, now + 6 * DAY);
-assert.equal(s3.plants.some((p) => p.dead), false, 'tiny daily drink keeps plants alive');
-const s4 = G.createInitialState(now);
-const b4 = G.addBottle(s4, { name: 'x', capacity: 500, icon: 'cup' });
-for (let d = 0; d < 5; d++) { G.processDays(s4, now + d * DAY); for (let k = 0; k < 4; k++) G.drink(s4, b4.id, 'water', now + d * DAY + k * 3 * 3600e3); }
-G.processDays(s4, now + 5 * DAY);
-console.log('stages after 5 perfect days:', s4.plants.slice(0, 7).map((p) => p.species + ':' + G.plantStage(p)).join(' '));
-assert.equal(G.plantStage(s4.plants.find((p) => p.species === 'dandelion')), 'fruit');
+/* ---------------------------------------------------- habitats (natural logic) */
+{
+  const s = fullLand(G.createInitialState(now));
+  assert.equal(G.canPlacePlant(s, 'cactus', { x: 6, z: 4 }), false, 'cactus in river');
+  assert.equal(G.canPlacePlant(s, 'cactus', { x: 6, z: 3 }), false, 'cactus by river (rot)');
+  assert.equal(G.canPlacePlant(s, 'cactus', { x: 0, z: 3 }), true, 'cactus on dry grass');
+  assert.equal(G.canPlacePlant(s, 'waterlily', { x: 0, z: 3 }), false, 'lily on land');
+  assert.equal(G.canPlacePlant(s, 'waterlily', { x: 6, z: 4 }), true, 'lily in river');
+  assert.equal(G.canPlacePlant(s, 'lotus', { x: 6, z: 4 }), false, 'lotus needs a pond');
+  assert.equal(G.canPlacePlant(s, 'ivy', { x: 0, z: 3 }), false, 'ivy on ground');
+  assert.equal(G.canPlacePlant(s, 'palm', { x: 3, z: 9 }), false, 'palm on dry sand');
+  assert.equal(G.canPlacePlant(s, 'palm', { x: 1, z: 7 }), true, 'palm in the oasis');
+  assert.equal(G.canPlacePlant(s, 'palm', { x: 4, z: 8 }), false, 'palm off sand');
+}
 
-// buildings
-const s5 = G.createInitialState(now);
-s5.coins = 500;
-assert.ok(G.buy(s5, 'pond', now));
-const pond = G.placeBuilding(s5, 'pond', 0, 8);
-assert.ok(pond);
-assert.equal(G.canPlacePlant(s5, 'lotus', { x: 0, z: 8 }), true, 'lotus in pond');
-assert.equal(G.canPlacePlant(s5, 'clover', { x: 0, z: 8 }), false, 'no clover in pond');
-assert.equal(G.canPlacePlant(s5, 'fern', { x: 2, z: 8 }), true, 'pond makes shore');
-s5.inventory.seeds = 1;
-const lot = G.plantSeed(s5, { x: 1, z: 9 }, now);
-assert.ok(lot && G.PLANT_MAP[lot.species].habitat.some((h) => h === 'water' || h === 'pond'));
-assert.ok(G.moveBuilding(s5, pond.id, 0, 6));
-assert.equal(lot.x, 1); assert.equal(lot.z, 7, 'aquatic plant moves with the pond');
-assert.ok(G.buy(s5, 'bridge', now));
-assert.equal(G.canPlaceBuilding(s5, 'bridge', 0, 0), false);
-assert.equal(G.canPlaceBuilding(s5, 'bridge', 6, 0), true);
-assert.ok(G.buy(s5, 'well', now));
-assert.ok(G.placeBuilding(s5, 'well', 1, 2));
-assert.equal(G.canPlacePlant(s5, 'fern', { x: 0, z: 2 }), true, 'well moistens land');
-G.storeBuilding(s5, s5.buildings[0].id);
-assert.ok(s5.plants.find((p) => p.species === 'ivy').stored, 'vines are stored with their building');
-assert.equal(G.validPlantSpots(s5, 'ivy').length, 0, 'no walls left for ivy');
+/* ---------------------------------------------------- drinking */
+{
+  const s = G.createInitialState(now);
+  const w = G.addBottle(s, { name: 'Big', capacity: 1000, icon: 'jug' });
+  const c0 = s.coins;
+  let r = G.drink(s, w.id, 'water', now, () => 0.3);
+  assert.equal(r.coins, 10);
+  assert.equal(s.coins, c0 + 10);
+  assert.equal(r.sprouts.length, 2, 'two sprouts for 1000ml');
+  r = G.drink(s, w.id, 'drink', now + 1000, () => 0.3);
+  assert.equal(r.coins, 5, 'beverage gives half coins');
+  for (const p of s.plants) if (!p.stored) assert.ok(G.canPlacePlant(s, p.species, spotOf(p), p.id), 'sprout valid ' + p.species);
+}
+
+/* ---------------------------------------------------- low intake -> dry plants */
+{
+  const s = G.createInitialState(now);
+  const small = G.addBottle(s, { name: 's', capacity: 500, icon: 'flask' });
+  s.goal = 4000;
+  for (let i = 0; i < 20; i++) { s.sproutProgress = 500; G.drink(s, small.id, 'drink', now + i * 25 * 3600e3); }
+  const low = [...new Set(s.plants.slice(3).map((p) => p.species))];
+  console.log('species grown with low intake:', low.join(','));
+  for (const sp of low) assert.ok(G.PLANT_MAP[sp].tiers.some((t) => t === 'dry' || t === 'low'), 'dry-tier species ' + sp);
+  assert.ok(!low.includes('lotus') && !low.includes('waterlily'));
+}
+
+/* ---------------------------------------------------- life and death */
+{
+  const s = G.createInitialState(now);
+  const w = G.addBottle(s, { name: 'Big', capacity: 1000, icon: 'jug' });
+  G.drink(s, w.id, 'water', now);
+  G.processDays(s, now + 2 * DAY);
+  const st = G.plantStatus(s, s.plants[0], now + 2 * DAY);
+  assert.equal(st.warn, true); assert.equal(st.dead, false);
+  G.processDays(s, now + 3 * DAY);
+  assert.equal(G.plantStatus(s, s.plants[0], now + 3 * DAY).urgent, true);
+  assert.equal(s.plants.some((p) => p.dead), false);
+  G.processDays(s, now + 4 * DAY);
+  assert.equal(s.plants.every((p) => p.dead), true, 'all die after 3 full dry days');
+  assert.ok(s.diary[G.dayKey(now)].score > 0);
+
+  const s3 = G.createInitialState(now);
+  const b3 = G.addBottle(s3, { name: 'x', capacity: 100, icon: 'cup' });
+  for (let d = 0; d < 6; d++) { G.processDays(s3, now + d * DAY); G.drink(s3, b3.id, 'water', now + d * DAY); }
+  G.processDays(s3, now + 6 * DAY);
+  assert.equal(s3.plants.some((p) => p.dead), false, 'tiny daily drink keeps plants alive');
+
+  const s4 = G.createInitialState(now);
+  const b4 = G.addBottle(s4, { name: 'x', capacity: 500, icon: 'cup' });
+  for (let d = 0; d < 5; d++) { G.processDays(s4, now + d * DAY); for (let k = 0; k < 4; k++) G.drink(s4, b4.id, 'water', now + d * DAY + k * 3 * 3600e3); }
+  G.processDays(s4, now + 5 * DAY);
+  const fern = s4.plants.find((p) => p.species === 'fern');
+  assert.equal(fern.perfectDays, 5, 'perfect days counted');
+  assert.equal(G.plantStage(fern), 'mature');
+  assert.equal(G.plantStage({ species: 'dandelion', perfectDays: 4, wateredDays: 4, leaves: 5 }), 'fruit');
+  assert.equal(G.plantStage({ species: 'tulip', perfectDays: 2, wateredDays: 2, leaves: 5 }), 'bloom');
+}
+
+/* ---------------------------------------------------- buildings */
+{
+  const s = fullLand(G.createInitialState(now));
+  s.coins = 500;
+  assert.equal(G.canPlacePlant(s, 'fern', { x: 4, z: 2 }), false, 'dry before the pond');
+  assert.ok(G.buy(s, 'pond', now));
+  const pond = G.placeBuilding(s, 'pond', 2, 2);
+  assert.ok(pond);
+  assert.equal(G.canPlacePlant(s, 'lotus', { x: 2, z: 2 }), true, 'lotus in pond');
+  assert.equal(G.canPlacePlant(s, 'clover', { x: 2, z: 2 }), false, 'no clover in pond');
+  assert.equal(G.canPlacePlant(s, 'fern', { x: 4, z: 2 }), true, 'pond makes shore');
+  s.inventory.seeds = 1;
+  const lot = G.plantSeed(s, { x: 3, z: 3 }, now);
+  assert.ok(lot && G.PLANT_MAP[lot.species].habitat.some((h) => h === 'water' || h === 'pond'));
+  assert.ok(G.moveBuilding(s, pond.id, 1, 5));
+  assert.equal(lot.x, 2); assert.equal(lot.z, 6, 'aquatic plant moves with the pond');
+  assert.ok(G.buy(s, 'bridge', now));
+  assert.equal(G.canPlaceBuilding(s, 'bridge', 0, 0), false);
+  assert.equal(G.canPlaceBuilding(s, 'bridge', 6, 4), true);
+  assert.equal(G.canPlacePlant(s, 'fern', { x: 9, z: 2 }), false);
+  assert.ok(G.buy(s, 'well', now));
+  assert.ok(G.placeBuilding(s, 'well', 8, 2));
+  assert.equal(G.canPlacePlant(s, 'fern', { x: 9, z: 2 }), true, 'well moistens land');
+  G.storeBuilding(s, s.buildings[0].id);
+  assert.ok(s.plants.find((p) => p.species === 'ivy').stored, 'vines are stored with their building');
+  assert.equal(G.validPlantSpots(s, 'ivy').length, 0, 'no walls left for ivy');
+}
+
 console.log('all tests passed');
