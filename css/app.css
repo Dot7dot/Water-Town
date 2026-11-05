@@ -213,6 +213,10 @@ input, select { font: inherit; color: inherit; }
 .hud-sub { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-soft); }
 .mini-bar { flex: 1; height: 8px; border-radius: 99px; background: #eef1f5; overflow: hidden; align-self: center; max-width: 120px; }
 .mini-bar > i { display: block; height: 100%; background: var(--green); border-radius: 99px; transition: width .6s; }
+.hud-land { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-soft); padding-top: 6px; border-top: 2px dashed var(--line); }
+.hud-land span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-bar.land { max-width: 110px; flex: 1 0 70px; }
+.mini-bar.land > i { background: linear-gradient(90deg, #c99566, #8fd16a); }
 
 .thirst-banner {
   align-self: center; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px;

@@ -12,8 +12,24 @@ export const PERFECT_MAX = 1.5;
 export const DIE_AFTER_DRY_DAYS = 3;  // three full days without drinking -> plant dies
 export const SEED_PRICE = 6;
 
-// Starting terrain. G = grass, W = river, S = sand
+// Terrain of a new town. G = grass, W = water, S = sand.
+// The town starts as a tiny 2x3 plot (x 4-5, z 3-5) holding one small spring at (5,4);
+// as you drink, the land expands and reveals the river, the oasis and the desert.
 export const TERRAIN = [
+  'GGGGGGGGGG',
+  'GWGGGGGGGG',
+  'GGGGGGGGGG',
+  'GGGGGGGGGG',
+  'GGGGGWWWGG',
+  'GGGGGGGWGG',
+  'GGGGGGGWWG',
+  'SSSGGGGGWG',
+  'SWSSGGGGWG',
+  'SSSSGGGGWG',
+];
+
+// Map used by towns created before land expansion existed (they keep their full 10x10 land).
+export const LEGACY_TERRAIN = [
   'GGGGGGWGGG',
   'GGGGGGWGGG',
   'GGGGGWWGGG',
@@ -24,6 +40,27 @@ export const TERRAIN = [
   'GGGGWGGSSS',
   'GGGWWGGSSS',
   'GGGWGGGSSS',
+];
+
+// Land expansion. rect = [x0, z0, x1, z1] (inclusive) of open land; need = lifetime effective ml.
+// Each step adds one row or column, growing outward from the starting 2x3 plot.
+export const LAND_LEVELS = [
+  { rect: [4, 3, 5, 5], need: 0 },      // 2x3 start, one small spring
+  { rect: [3, 3, 5, 5], need: 1000 },   // 3x3
+  { rect: [3, 3, 5, 6], need: 2500 },   // 3x4
+  { rect: [3, 3, 6, 6], need: 4500 },   // 4x4 - the river appears
+  { rect: [3, 2, 6, 6], need: 7000 },   // 4x5
+  { rect: [2, 2, 6, 6], need: 10000 },  // 5x5
+  { rect: [2, 2, 6, 7], need: 14000 },  // 5x6
+  { rect: [2, 2, 7, 7], need: 18000 },  // 6x6
+  { rect: [2, 1, 7, 7], need: 23000 },  // 6x7
+  { rect: [1, 1, 7, 7], need: 28000 },  // 7x7 - a little pool
+  { rect: [1, 1, 7, 8], need: 34000 },  // 7x8 - the oasis
+  { rect: [1, 1, 8, 8], need: 40000 },  // 8x8
+  { rect: [1, 0, 8, 8], need: 47000 },  // 8x9
+  { rect: [0, 0, 8, 8], need: 54000 },  // 9x9
+  { rect: [0, 0, 8, 9], need: 62000 },  // 9x10
+  { rect: [0, 0, 9, 9], need: 70000 },  // 10x10 - the whole island
 ];
 
 export const BOTTLE_ICONS = ['flask', 'sport', 'jug', 'cup', 'thermos'];

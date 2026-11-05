@@ -1,6 +1,6 @@
 // Pure game rules. No DOM, no three.js — can be tested in Node.
 import {
-  GRID, TERRAIN, ML_PER_COIN, DRINK_FACTOR, DEFAULT_GOAL, SPROUT_EVERY_ML, LEAF_EVERY_ML,
+  GRID, TERRAIN, LEGACY_TERRAIN, LAND_LEVELS, ML_PER_COIN, DRINK_FACTOR, DEFAULT_GOAL, SPROUT_EVERY_ML, LEAF_EVERY_ML,
   PERFECT_MIN, PERFECT_MAX, DIE_AFTER_DRY_DAYS, SEED_PRICE, TIERS, TIER_ORDER,
   PLANTS, PLANT_MAP, BUILDINGS, BUILDING_MAP, BOTTLE_PRESETS,
 } from './data.js';
@@ -36,6 +36,8 @@ export function createInitialState(now, lang = 'zh') {
     lang,
     goal: DEFAULT_GOAL,
     coins: 20,
+    terrain: TERRAIN.slice(),
+    landLevel: 0,
     bottles: [],
     logs: [],
     buildings: [],
@@ -51,13 +53,11 @@ export function createInitialState(now, lang = 'zh') {
     welcomed: false,
     nextId: 1,
   };
-  const home = { id: nid(state, 'b'), def: 'cottage', x: 2, z: 3, rot: 0 };
+  // a tiny 2x3 plot: a cottage, one small spring and a few cells left to grow on
+  const home = { id: nid(state, 'b'), def: 'cottage', x: 4, z: 3, rot: 0 };
   state.buildings.push(home);
   state.discovered.buildings.cottage = today;
-  const starters = [
-    ['pine', 1, 1], ['clover', 3, 6], ['fern', 4, 4], ['duckweed', 6, 1],
-    ['dandelion', 8, 2], ['barrel', 8, 8],
-  ];
+  const starters = [['duckweed', 5, 4], ['fern', 5, 5]];
   for (const [sp, x, z] of starters) addPlant(state, sp, { x, z }, today);
   addPlant(state, 'ivy', { wall: { b: home.id, side: 0, u: 0 } }, today);
   return state;
@@ -71,6 +71,13 @@ export function migrate(state) {
   state.diary ||= {};
   state.leafCarry ||= 0;
   state.goal ||= DEFAULT_GOAL;
+  if (!state.terrain) {
+    // towns created before land expansion keep their original, fully open island
+    state.terrain = LEGACY_TERRAIN.slice();
+    state.landLevel = LAND_LEVELS.length - 1;
+  }
+  state.landLevel = Math.max(0, Math.min(LAND_LEVELS.length - 1, state.landLevel || 0));
+  updateLand(state);
   return state;
 }
 
@@ -112,7 +119,44 @@ export { BOTTLE_PRESETS };
 /* ------------------------------------------------------- spatial index */
 const ck = (x, z) => `${x},${z}`;
 export const inBounds = (x, z) => x >= 0 && z >= 0 && x < GRID && z < GRID;
-export const terrainAt = (x, z) => TERRAIN[z][x];
+export const terrainAt = (state, x, z) => (state.terrain || TERRAIN)[z][x];
+export const landRect = (state) => LAND_LEVELS[state.landLevel ?? LAND_LEVELS.length - 1].rect;
+export function isUnlocked(state, x, z) {
+  const [x0, z0, x1, z1] = landRect(state);
+  return x >= x0 && x <= x1 && z >= z0 && z <= z1;
+}
+
+/* ------------------------------------------------------- land expansion */
+export function lifetimeEff(state) {
+  return state.logs.reduce((sum, l) => sum + logEff(l), 0);
+}
+// Opens new land when the lifetime water total passes the next threshold. Land never closes again.
+export function updateLand(state) {
+  const total = lifetimeEff(state);
+  const before = state.landLevel;
+  while (state.landLevel < LAND_LEVELS.length - 1 && total >= LAND_LEVELS[state.landLevel + 1].need) state.landLevel += 1;
+  if (state.landLevel === before) return null;
+  const area = (r) => (r[2] - r[0] + 1) * (r[3] - r[1] + 1);
+  return { from: before, to: state.landLevel, cells: area(LAND_LEVELS[state.landLevel].rect) - area(LAND_LEVELS[before].rect) };
+}
+export function landProgress(state) {
+  const level = state.landLevel;
+  const max = LAND_LEVELS.length - 1;
+  const total = lifetimeEff(state);
+  const r = LAND_LEVELS[level].rect;
+  const size = { w: r[2] - r[0] + 1, h: r[3] - r[1] + 1 };
+  if (level >= max) return { level, max, total, done: true, size, frac: 1 };
+  const prev = LAND_LEVELS[level].need; const next = LAND_LEVELS[level + 1].need;
+  return { level, max, total, done: false, size, prev, next, remaining: Math.max(0, next - total), frac: Math.min(1, (total - prev) / (next - prev)) };
+}
+// cells that the next expansion will open (shown as a preview in the city)
+export function nextLandCells(state) {
+  if (state.landLevel >= LAND_LEVELS.length - 1) return [];
+  const [a0, b0, a1, b1] = LAND_LEVELS[state.landLevel + 1].rect;
+  const out = [];
+  for (let x = a0; x <= a1; x++) for (let z = b0; z <= b1; z++) if (!isUnlocked(state, x, z)) out.push({ x, z });
+  return out;
+}
 
 export function footprint(x, z, size) {
   const cells = [];
@@ -140,7 +184,7 @@ export function buildIndex(state) {
     const size = PLANT_MAP[p.species].size;
     for (const [x, z] of footprint(p.x, p.z, size)) pAt.set(ck(x, z), p);
   }
-  const isWater = (x, z) => inBounds(x, z) && (terrainAt(x, z) === 'W' || pond.has(ck(x, z)));
+  const isWater = (x, z) => inBounds(x, z) && (terrainAt(state, x, z) === 'W' || pond.has(ck(x, z)));
   for (let x = 0; x < GRID; x++) {
     for (let z = 0; z < GRID; z++) {
       if (isWater(x, z)) continue;
@@ -156,12 +200,13 @@ export function buildIndex(state) {
       }
     }
   }
-  return { bAt, pAt, pond, moist, wallAt };
+  return { bAt, pAt, pond, moist, wallAt, terrain: state.terrain || TERRAIN, rect: landRect(state) };
 }
 
 export function cellInfo(state, x, z, idx = buildIndex(state)) {
   return {
-    terrain: terrainAt(x, z),
+    terrain: terrainAt(state, x, z),
+    unlocked: isUnlocked(state, x, z),
     building: idx.bAt.get(ck(x, z)) || null,
     plant: idx.pAt.get(ck(x, z)) || null,
     pond: idx.pond.has(ck(x, z)),
@@ -175,7 +220,9 @@ export function groundTokens(idx, x, z, size = 1) {
   let water = true; let pond = true; let grass = true; let sand = true; let anyMoist = false; let allDryLand = true;
   for (const [cx, cz] of cells) {
     if (!inBounds(cx, cz)) return new Set();
-    const t = terrainAt(cx, cz);
+    const [x0, z0, x1, z1] = idx.rect;
+    if (cx < x0 || cx > x1 || cz < z0 || cz > z1) return new Set(); // locked land
+    const t = idx.terrain[cz][cx];
     const isPond = idx.pond.has(ck(cx, cz));
     const isWater = t === 'W' || isPond;
     const m = idx.moist.has(ck(cx, cz));
@@ -264,8 +311,8 @@ export function canPlaceBuilding(state, defId, x, z, ignoreBuildingId = null) {
   const carried = moving ? new Set(carriedPlants(state, moving).map((p) => p.id)) : new Set();
   const idx = buildIndex(state);
   for (const [cx, cz] of footprint(x, z, def.size)) {
-    if (!inBounds(cx, cz)) return false;
-    const t = terrainAt(cx, cz);
+    if (!inBounds(cx, cz) || !isUnlocked(state, cx, cz)) return false;
+    const t = terrainAt(state, cx, cz);
     if (def.placeOn === 'river' && t !== 'W') return false;
     if (def.placeOn === 'land' && t === 'W') return false;
     if (def.placeOn === 'grass' && t !== 'G') return false;
@@ -373,6 +420,7 @@ function freeGroundSpots(state, idx, size) {
     for (let z = 0; z <= GRID - size; z++) {
       let ok = true;
       for (const [cx, cz] of footprint(x, z, size)) {
+        if (!isUnlocked(state, cx, cz)) { ok = false; break; }
         const b = idx.bAt.get(ck(cx, cz));
         if ((b && !BUILDING_MAP[b.def].pond) || idx.pAt.get(ck(cx, cz))) { ok = false; break; }
       }
@@ -438,7 +486,7 @@ export function seedSpecies(state, spot, now, rnd = Math.random) {
     if (!b || !wallSlotFree(state, idx, b, spot.wall.side, spot.wall.u)) return null;
     tokens = new Set(['wall']);
   } else {
-    if (!inBounds(spot.x, spot.z)) return null;
+    if (!inBounds(spot.x, spot.z) || !isUnlocked(state, spot.x, spot.z)) return null;
     const b = idx.bAt.get(ck(spot.x, spot.z));
     if ((b && !BUILDING_MAP[b.def].pond) || idx.pAt.get(ck(spot.x, spot.z))) return null;
     tokens = groundTokens(idx, spot.x, spot.z, 1);
@@ -486,6 +534,7 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
   };
   state.logs.push(log);
   state.coins = round1(state.coins + coins);
+  const land = updateLand(state);
 
   // 1) irrigation: every drink waters every living plant in town
   const alive = state.plants.filter((p) => !p.dead);
@@ -518,7 +567,7 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
   if (!full) state.sproutProgress = Math.min(state.sproutProgress, SPROUT_EVERY_ML * 2);
   const after = before + eff;
   return {
-    log, coins, bonus, sprouts, grown: [...grown], full,
+    log, coins, bonus, sprouts, grown: [...grown], full, land,
     watered: alive.length,
     reachedGoal: before < state.goal && after >= state.goal,
     tier: hydrationTier(state, now),

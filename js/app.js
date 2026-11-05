@@ -181,7 +181,16 @@ function renderHUD() {
       <div class="liquid-label">${Math.round(ratio * 100)}%</div>
     </div>
     <div class="hud-sub"><span>${esc(t('tierHint_' + tier))}</span>
-      <span style="display:flex;gap:6px;align-items:center;white-space:nowrap">🌱 <span class="mini-bar"><i style="width:${sprout}%"></i></span></span></div>`;
+      <span style="display:flex;gap:6px;align-items:center;white-space:nowrap">🌱 <span class="mini-bar"><i style="width:${sprout}%"></i></span></span></div>
+    ${landHUD()}`;
+}
+
+function landHUD() {
+  const lp = G.landProgress(state);
+  const size = `${lp.size.w}×${lp.size.h}`;
+  if (lp.done) return `<div class="hud-land"><span>🏝️ ${esc(t('landDone', { size }))}</span></div>`;
+  return `<div class="hud-land"><span>🏝️ ${esc(t('landLine', { size, n: Math.ceil(lp.remaining) }))}</span>
+    <span class="mini-bar land"><i style="width:${lp.frac * 100}%"></i></span></div>`;
 }
 
 function thirstyPlants() {
@@ -279,7 +288,11 @@ function doDrink(bid, type) {
       scene.sparkle(p.id);
       toast(t('newSprout', { name: plantName(p.species) }), { icon: '🌱' });
     }, i * 450));
-    if (res.full) toast(t('cityFull'), { icon: '🏡', warn: true, ms: 3500 });
+    if (res.land) {
+      confetti(80);
+      toast(t('landUnlocked', { n: res.land.cells, size: `${G.landProgress(state).size.w}×${G.landProgress(state).size.h}` }), { icon: '🏝️', ms: 4200 });
+      haptic(60);
+    } else if (res.full) toast(t('cityFull'), { icon: '🏡', warn: true, ms: 3500 });
     if (res.reachedGoal) { confetti(); toast(t('goalReached'), { icon: '🎉', ms: 3500 }); }
   }, 1000);
 }
@@ -357,8 +370,12 @@ function openBottleEditor(bottle, after) {
 /* ================================================================ city interaction */
 function onTap(pick) {
   if (mode === 'place') { placeTap(pick); return; }
-  if (pick.kind === 'plant' || pick.kind === 'building') { haptic(8); selectObj(pick.kind, pick.id); }
-  else deselect();
+  if (pick.kind === 'plant' || pick.kind === 'building') { haptic(8); selectObj(pick.kind, pick.id); return; }
+  deselect();
+  if (pick.locked) {
+    const lp = G.landProgress(state);
+    if (!lp.done) toast(t('landLocked', { n: Math.ceil(lp.remaining) }), { icon: '🔒' });
+  }
 }
 
 function selectObj(kind, id) {
@@ -533,6 +550,7 @@ function placeTap(pick) {
 function invalidReason(spot) {
   if (!spot || spot.wall) return t('reasonHabitat');
   const info = G.cellInfo(state, spot.x, spot.z);
+  if (!info.unlocked) return t('reasonLocked');
   const selfId = placing.id;
   if ((info.building && info.building.id !== selfId && !(BUILDING_MAP[info.building.def].pond && placing.type !== 'newBuilding' && placing.type !== 'moveBuilding')) || (info.plant && info.plant.id !== selfId)) return t('reasonOccupied');
   return t('reasonHabitat');
@@ -1022,6 +1040,7 @@ function showWelcome() {
       <div><span>💧</span>${t('welcome1')}</div>
       <div>${coinSVG(26)}${t('welcome2')}</div>
       <div><span>🌵</span>${t('welcome3')}</div>
+      <div><span>🏝️</span>${t('welcome4')}</div>
     </div>
     <div class="seg" id="wLang" style="margin-bottom:12px"><button data-lang="zh" class="${getLang() === 'zh' ? 'on' : ''}">繁體中文</button><button data-lang="en" class="${getLang() === 'en' ? 'on' : ''}">English</button></div>
     <button class="btn green block" data-a="start">${t('start')}</button>`, { dismissable: false });
