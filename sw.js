@@ -1,11 +1,11 @@
 // Offline cache for Water Town. Bump VERSION when files change.
-const VERSION = 'wt-v2';
+const VERSION = 'wt-v3';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css', './vendor/animate.min.css',
   './vendor/three.module.min.js', './vendor/RoundedBoxGeometry.js',
   './js/main.js', './js/app.js', './js/loader.js', './js/data.js', './js/i18n.js', './js/game.js',
   './js/models.js', './js/scene.js', './js/ui.js', './js/icons.js',
-  './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
+  './icons/icon.svg', './icons/icon-thirsty.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
 ];
 
 self.addEventListener('install', (e) => {

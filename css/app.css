@@ -152,7 +152,16 @@ input, select { font: inherit; color: inherit; }
   box-shadow: 0 2px 0 var(--line);
 }
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.brand-logo { width: 32px; height: 32px; border-radius: 10px; background: url('../icons/icon.svg') center/cover; box-shadow: 0 3px 0 #cfe6f7; flex: none; }
+.brand-logo { width: 32px; height: 32px; border-radius: 10px; background: url('../icons/icon.svg') center/cover; box-shadow: 0 3px 0 #cfe6f7; flex: none; transition: box-shadow .3s; }
+/* "too long without water": the app icon turns yellow */
+body.thirsty-mode .brand-logo { background-image: url('../icons/icon-thirsty.svg'); box-shadow: 0 3px 0 #f0c64a; animation: wiggle 1.6s ease-in-out infinite; }
+body.thirsty-mode .topbar { background: linear-gradient(#fff8dcee, #fff4ccdd); box-shadow: 0 2px 0 #f6e3a0; }
+.drink-nudge {
+  align-self: center; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px;
+  background: #ffd84d; color: #5a4300; font-weight: 900; font-size: 14px; box-shadow: 0 4px 0 #e0b420;
+}
+.drink-nudge:active { transform: translateY(3px); box-shadow: 0 1px 0 #e0b420; }
+.drink-nudge img { width: 22px; height: 22px; border-radius: 6px; }
 .brand-name { font-size: 18px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .top-actions { display: flex; align-items: center; gap: 8px; }
 .coin-pill {

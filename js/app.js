@@ -77,6 +77,7 @@ export async function startApp() {
 }
 
 function checkDay() {
+  renderThirstIcon();
   if (today() === state.lastProcessed) { scene.sync(state, now()); renderThirst(); return; }
   const r = G.processDays(state, now());
   save();
@@ -119,6 +120,7 @@ function bindStatic() {
   $('#rotLBtn').addEventListener('click', () => scene.rotateView(-1));
   $('#rotRBtn').addEventListener('click', () => scene.rotateView(1));
   $('#bagBtn').addEventListener('click', openBackpack);
+  $('#drinkNudge').addEventListener('click', () => { haptic(); openDrink(); });
   $('#view-shop').addEventListener('click', onShopClick);
   $('#view-diary').addEventListener('click', onDiaryClick);
   $('#infoCard').addEventListener('click', onInfoClick);
@@ -151,6 +153,7 @@ function renderAll() {
   renderHUD();
   renderThirst();
   renderBagBadge();
+  renderThirstIcon();
   scene.sync(state, now());
   $('#diaryDot').hidden = !hasUnseenReview();
   if (activeTab === 'diary') renderDiary();
@@ -191,6 +194,32 @@ function landHUD() {
   if (lp.done) return `<div class="hud-land"><span>🏝️ ${esc(t('landDone', { size }))}</span></div>`;
   return `<div class="hud-land"><span>🏝️ ${esc(t('landLine', { size, n: Math.ceil(lp.remaining) }))}</span>
     <span class="mini-bar land"><i style="width:${lp.frac * 100}%"></i></span></div>`;
+}
+
+/* "Too long without water": yellow icon (logo, tab icon, status bar), title, badge and a nudge. */
+function fmtDuration(ms) {
+  const h = Math.floor(ms / 3600e3); const m = Math.floor((ms % 3600e3) / 60e3);
+  return m ? t('durHM', { h, m }) : t('durH', { h });
+}
+let iconWasThirsty = null;
+function renderThirstIcon() {
+  const info = G.thirstInfo(state, now());
+  const on = info.overdue;
+  document.body.classList.toggle('thirsty-mode', on);
+  const nudge = $('#drinkNudge');
+  nudge.hidden = !on;
+  if (on) nudge.innerHTML = `<img src="icons/icon-thirsty.svg" alt="" />${esc(t('nudge', { t: fmtDuration(info.since) }))}`;
+  document.title = on ? `${t('titleThirsty')} · ${t('appName')}` : `${t('appName')} · Water Town`;
+  if (iconWasThirsty === on) return;
+  iconWasThirsty = on;
+  const fav = $('#favicon');
+  if (fav) fav.href = on ? 'icons/icon-thirsty.svg' : 'icons/icon.svg';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', on ? '#ffd84d' : '#7cc8ff');
+  // a badge on the installed app icon, where the system supports it
+  try {
+    if (on && navigator.setAppBadge) navigator.setAppBadge().catch(() => {});
+    if (!on && navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+  } catch { /* not supported */ }
 }
 
 function thirstyPlants() {
@@ -280,6 +309,7 @@ function doDrink(bid, type) {
   renderCoins(true);
   renderHUD();
   renderThirst();
+  renderThirstIcon();
   renderBagBadge();
   toast(`${t('earned', { n: fmtCoins(res.coins) })} · ${t('wateredAll', { n: res.watered })}${res.bonus ? ' · ' + t('bonusTower') : ''}`, { icon: type === 'drink' ? '🧋' : '💧' });
   setTimeout(() => {
@@ -930,6 +960,9 @@ function openSettings() {
         <div class="seg" id="langSeg"><button data-lang="zh" class="${getLang() === 'zh' ? 'on' : ''}">繁體中文</button><button data-lang="en" class="${getLang() === 'en' ? 'on' : ''}">English</button></div></div>
       <div class="field"><label>${t('dailyGoal')}：<b id="goalVal">${state.goal}</b> ml</label>
         <input type="range" id="goalRange" min="1000" max="4000" step="100" value="${state.goal}" /></div>
+      <div class="field"><label>💛 ${t('remindLabel')}</label>
+        <div class="seg" id="remindSeg">${G.REMIND_OPTIONS.map((h) => `<button data-remind="${h}" class="${(state.remindHours ?? 3) === h ? 'on' : ''}">${h ? t('remindHours', { n: h }) : t('remindOff')}</button>`).join('')}</div>
+        <p class="note" style="text-align:left;margin:2px 2px 0">${t('remindNote')}</p></div>
       <div class="field"><label>${t('weightCalc')}</label>
         <div class="row"><input class="input" id="weightIn" type="number" inputmode="decimal" placeholder="${t('weight')}" style="flex:1" />
         <button class="btn sm" data-a="weight">${t('apply')}</button></div></div>
@@ -944,6 +977,13 @@ function openSettings() {
   el.addEventListener('click', async (e) => {
     const lb = e.target.closest('[data-lang]');
     if (lb) { changeLang(lb.dataset.lang); m.close(); setTimeout(openSettings, 230); return; }
+    const rb = e.target.closest('[data-remind]');
+    if (rb) {
+      state.remindHours = Number(rb.dataset.remind); save();
+      $$('#remindSeg button', el).forEach((b) => b.classList.toggle('on', b === rb));
+      renderThirstIcon();
+      return;
+    }
     const a = e.target.closest('[data-a]')?.dataset.a;
     if (a === 'weight') {
       const w = Number($('#weightIn', el).value);
