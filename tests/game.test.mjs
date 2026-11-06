@@ -163,4 +163,25 @@ const fullLand = (s) => { s.landLevel = MAX; return s; };
   assert.equal(G.validPlantSpots(s, 'ivy').length, 0, 'no walls left for ivy');
 }
 
+/* ---------------------------------------------------- yellow icon reminder */
+{
+  const H = 3600e3;
+  const s = G.createInitialState(now);
+  assert.equal(s.remindHours, 3);
+  assert.equal(G.thirstInfo(s, now + 2 * H).overdue, false, 'fresh town is not overdue yet');
+  assert.equal(G.thirstInfo(s, now + 3 * H).overdue, true, 'no drink for 3 h since starting');
+  const w = G.addBottle(s, { name: 'x', capacity: 500, icon: 'cup' });
+  G.drink(s, w.id, 'drink', now + 4 * H);
+  assert.equal(G.thirstInfo(s, now + 5 * H).overdue, false, 'a beverage also resets the timer');
+  assert.equal(G.thirstInfo(s, now + 7 * H - 1).overdue, false);
+  assert.equal(G.thirstInfo(s, now + 7 * H).overdue, true, '3 h after the last drink');
+  assert.equal(G.thirstInfo(s, now + 7 * H).since, 3 * H);
+  s.remindHours = 4;
+  assert.equal(G.thirstInfo(s, now + 7 * H).overdue, false, 'custom interval');
+  s.remindHours = 0;
+  assert.equal(G.thirstInfo(s, now + 30 * H).overdue, false, 'reminder can be turned off');
+  const old = G.createInitialState(now); delete old.remindHours; G.migrate(old);
+  assert.equal(old.remindHours, 3, 'old saves get the default interval');
+}
+
 console.log('all tests passed');

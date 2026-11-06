@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="喝水小鎮" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="icon" id="favicon" href="icons/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -61,6 +61,7 @@
         <div id="cityCanvas" class="city-canvas"></div>
         <div class="hud">
           <div class="hud-card glass" id="hudCard"></div>
+          <button class="drink-nudge animate__animated" id="drinkNudge" type="button" hidden></button>
           <div class="thirst-banner animate__animated" id="thirstBanner" hidden></div>
         </div>
         <div class="fab-col">

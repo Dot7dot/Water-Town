@@ -38,6 +38,7 @@ export function createInitialState(now, lang = 'zh') {
     coins: 20,
     terrain: TERRAIN.slice(),
     landLevel: 0,
+    remindHours: 3,
     bottles: [],
     logs: [],
     buildings: [],
@@ -71,6 +72,7 @@ export function migrate(state) {
   state.diary ||= {};
   state.leafCarry ||= 0;
   state.goal ||= DEFAULT_GOAL;
+  state.remindHours ??= 3;
   if (!state.terrain) {
     // towns created before land expansion keep their original, fully open island
     state.terrain = LEGACY_TERRAIN.slice();
@@ -572,6 +574,21 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
     reachedGoal: before < state.goal && after >= state.goal,
     tier: hydrationTier(state, now),
   };
+}
+
+/* ------------------------------------------------- "too long without water" */
+export const REMIND_OPTIONS = [2, 3, 4, 0]; // hours; 0 = off
+export function lastDrinkTs(state) {
+  let last = null;
+  for (const l of state.logs) if (last === null || l.ts > last) last = l.ts;
+  return last;
+}
+// overdue = no drink (water or beverage) for `remindHours` hours (counted from the town's creation before the first drink)
+export function thirstInfo(state, now) {
+  const hours = state.remindHours ?? 3;
+  const last = lastDrinkTs(state) ?? state.createdAt ?? now;
+  const since = Math.max(0, now - last);
+  return { hours, last, since, overdue: hours > 0 && since >= hours * 3600e3 };
 }
 
 export function deleteLog(state, logId, now) {
