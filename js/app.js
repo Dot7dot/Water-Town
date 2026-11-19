@@ -1,7 +1,7 @@
 // App controller: wires game rules, 3D city and UI together.
 import {
   GRID, TIERS, TIER_ORDER, PLANTS, PLANT_MAP, BUILDINGS, BUILDING_MAP, BOTTLE_PRESETS, BOTTLE_ICONS, BOTTLE_COLORS,
-  HABITAT_TEXT, SEED_PRICE, SPROUT_EVERY_ML, DRINK_FACTOR, ML_PER_COIN, PERFECT_MIN, PERFECT_MAX,
+  HABITAT_TEXT, habitatText, REALMS, REALM_MAP, REALM_ORDER, REALM_TIPS, SEED_PRICE, SPROUT_EVERY_ML, DRINK_FACTOR, ML_PER_COIN, PERFECT_MIN, PERFECT_MAX,
 } from './data.js';
 import * as G from './game.js';
 import { t, L, setLang, getLang, fmtCoins, fmtTime, fmtDay } from './i18n.js';
@@ -40,9 +40,14 @@ let lastType = 'water';
 let shopCat = 'building';
 let diaryPane = 'diary';
 let dexKind = 'plant';
+let dexRealm = null;
 let calMonth = null;
 
 const today = () => G.dayKey(now());
+// the realm (領地) currently on screen
+const realmId = () => (state.activeRealm && G.unlockedRealms(state).includes(state.activeRealm) ? state.activeRealm : 'town');
+const R = () => G.realmView(state, realmId());
+const habText = (h, realm = realmId()) => L(habitatText(h, realm));
 const coin = (n, size = 18) => `<span class="price">${coinSVG(size)}${fmtCoins(n)}</span>`;
 const plantName = (id) => L(PLANT_MAP[id].name);
 const buildingName = (id) => L(BUILDING_MAP[id].name);
@@ -69,7 +74,7 @@ export async function startApp() {
   window.addEventListener('wt:ready', () => {
     if (res.deaths.length) toast(t('plantsDied', { n: res.deaths.length }), { icon: '🥀', warn: true, ms: 4000 });
     if (!state.welcomed) showWelcome();
-    else maybeMorningReview();
+    else if (!maybeMorningReview()) maybeRealmIntro();
   }, { once: true });
 
   setInterval(checkDay, 30000);
@@ -78,7 +83,7 @@ export async function startApp() {
 
 function checkDay() {
   renderThirstIcon();
-  if (today() === state.lastProcessed) { scene.sync(state, now()); renderThirst(); return; }
+  if (today() === state.lastProcessed) { scene.sync(R(), now()); renderThirst(); return; }
   const r = G.processDays(state, now());
   save();
   renderAll();
@@ -121,6 +126,7 @@ function bindStatic() {
   $('#rotRBtn').addEventListener('click', () => scene.rotateView(1));
   $('#bagBtn').addEventListener('click', openBackpack);
   $('#drinkNudge').addEventListener('click', () => { haptic(); openDrink(); });
+  $('#hudCard').addEventListener('click', (e) => { const b = e.target.closest('[data-realm]'); if (b) onRealmArrow(b.dataset.realm); });
   $('#view-shop').addEventListener('click', onShopClick);
   $('#view-diary').addEventListener('click', onDiaryClick);
   $('#infoCard').addEventListener('click', onInfoClick);
@@ -154,7 +160,7 @@ function renderAll() {
   renderThirst();
   renderBagBadge();
   renderThirstIcon();
-  scene.sync(state, now());
+  scene.sync(R(), now());
   $('#diaryDot').hidden = !hasUnseenReview();
   if (activeTab === 'diary') renderDiary();
   if (activeTab === 'shop') renderShop();
@@ -171,8 +177,11 @@ function renderHUD() {
   const tier = G.hydrationTier(state, now());
   const scale = 1.6;
   const fill = Math.min(1, ratio / scale) * 100;
-  const sprout = Math.min(1, state.sproutProgress / SPROUT_EVERY_ML) * 100;
+  const sprout = Math.min(1, R().sproutProgress / SPROUT_EVERY_ML) * 100;
+  const rid = realmId();
+  const hint = rid === 'town' ? t('tierHint_' + tier) : L(REALM_TIPS[rid][tier]);
   $('#hudCard').innerHTML = `
+    ${realmArrowsHTML()}
     <div>
       <div class="hud-today">${t('today')} · ${t('goal')} ${state.goal} ml</div>
       <div class="hud-amount">${Math.round(st.eff)} <small>/ ${state.goal} ml</small></div>
@@ -183,17 +192,87 @@ function renderHUD() {
       <div class="liquid-fill" style="width:${fill}%"></div>
       <div class="liquid-label">${Math.round(ratio * 100)}%</div>
     </div>
-    <div class="hud-sub"><span>${esc(t('tierHint_' + tier))}</span>
+    <div class="hud-sub"><span>${esc(hint)}</span>
       <span style="display:flex;gap:6px;align-items:center;white-space:nowrap">🌱 <span class="mini-bar"><i style="width:${sprout}%"></i></span></span></div>
     ${landHUD()}`;
 }
 
 function landHUD() {
-  const lp = G.landProgress(state);
+  const lp = G.landProgress(R());
   const size = `${lp.size.w}×${lp.size.h}`;
-  if (lp.done) return `<div class="hud-land"><span>🏝️ ${esc(t('landDone', { size }))}</span></div>`;
-  return `<div class="hud-land"><span>🏝️ ${esc(t('landLine', { size, n: Math.ceil(lp.remaining) }))}</span>
+  const rm = REALM_MAP[realmId()];
+  const tag = `<b class="realm-tag">${rm.emoji} ${esc(L(rm.short))}</b>`;
+  if (lp.done) return `<div class="hud-land"><span>${tag} ${esc(t('landDone', { size }))}</span></div>`;
+  return `<div class="hud-land"><span>${tag} ${esc(t('landLine', { size, n: Math.ceil(lp.remaining) }))}</span>
     <span class="mini-bar land"><i style="width:${lp.frac * 100}%"></i></span></div>`;
+}
+
+/* ---------------------------------------------------------------- realms (領地) */
+function realmArrowsHTML() {
+  const i = REALM_ORDER.indexOf(realmId());
+  const open = G.unlockedRealms(state);
+  const btn = (id, dir) => {
+    if (!id) return '';
+    const ok = open.includes(id);
+    return `<button class="realm-arrow ${dir}${ok ? '' : ' locked'}" data-realm="${id}" aria-label="${esc(L(REALM_MAP[id].name))}">
+      ${dir === 'left' ? ICON.chevL : ''}<span class="ra-emo">${ok ? REALM_MAP[id].emoji : '🔒'}</span>${dir === 'right' ? ICON.chevR : ''}</button>`;
+  };
+  return btn(REALM_ORDER[i - 1], 'left') + btn(REALM_ORDER[i + 1], 'right');
+}
+
+function onRealmArrow(id) {
+  if (G.unlockedRealms(state).includes(id)) { switchRealm(id); return; }
+  const req = G.realmRequirement(state, id);
+  toast(t('realmLocked', {
+    prev: L(REALM_MAP[req.prev].name), name: L(REALM_MAP[id].name),
+    need: `${req.need.w}×${req.need.h}`, size: `${req.size.w}×${req.size.h}`,
+  }), { icon: '🔒', ms: 3600 });
+}
+
+function switchRealm(id) {
+  if (mode === 'place') exitPlace();
+  deselect();
+  state.activeRealm = id;
+  save();
+  haptic(15);
+  renderAll();
+  const rm = REALM_MAP[id];
+  const el = $('#realmTitle');
+  el.innerHTML = `<span class="rt-emo">${rm.emoji}</span><span>${esc(L(rm.name))}</span>`;
+  el.hidden = false;
+  el.classList.remove('animate__fadeOut'); el.classList.add('animate__animated', 'animate__zoomIn');
+  clearTimeout(switchRealm.timer);
+  switchRealm.timer = setTimeout(() => {
+    el.classList.remove('animate__zoomIn'); el.classList.add('animate__fadeOut');
+    setTimeout(() => { el.hidden = true; }, 600);
+  }, 1300);
+}
+
+// "a new realm opened!" — shown once per realm
+function maybeRealmIntro() {
+  state.realmIntroSeen ||= {};
+  const id = G.unlockedRealms(state).find((r) => r !== 'town' && !state.realmIntroSeen[r]);
+  if (!id) return false;
+  const rm = REALM_MAP[id];
+  const prev = REALM_MAP[REALM_ORDER[REALM_ORDER.indexOf(id) - 1]];
+  const m = openModal(`
+    <div class="realm-intro realm-${id}">
+      <div class="ri-emo animate__animated animate__tada">${rm.emoji}</div>
+      <div class="ri-kicker">${t('realmNew')}</div>
+      <h2>${esc(L(rm.name))}</h2>
+      <p>${esc(L(rm.desc))}</p>
+      <p class="note" style="text-align:left">${esc(t('realmIntroHow', { prev: L(prev.name) }))}</p>
+    </div>
+    <div class="row"><button class="btn ghost block" data-close>${t('later')}</button>
+    <button class="btn green block" data-a="go">${t('realmGo')}</button></div>`, { onClose: () => { state.realmIntroSeen[id] = true; save(); setTimeout(maybeRealmIntro, 300); } });
+  confetti(70);
+  m.el.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-a="go"]')) return;
+    m.close();
+    switchTab('city');
+    switchRealm(id);
+  });
+  return true;
 }
 
 /* "Too long without water": yellow icon (logo, tab icon, status bar), title, badge and a nudge. */
@@ -223,7 +302,7 @@ function renderThirstIcon() {
 }
 
 function thirstyPlants() {
-  return state.plants.filter((p) => !p.stored && G.plantStatus(state, p, now()).warn);
+  return R().plants.filter((p) => !p.stored && G.plantStatus(R(), p, now()).warn);
 }
 function renderThirst() {
   const n = thirstyPlants().length;
@@ -233,8 +312,8 @@ function renderThirst() {
 }
 
 function bagCount() {
-  const b = Object.values(state.inventory.buildings).reduce((s, n) => s + n, 0);
-  return b + (state.inventory.seeds || 0) + state.plants.filter((p) => p.stored).length;
+  const b = Object.entries(state.inventory.buildings).reduce((s, [id, n]) => s + ((BUILDING_MAP[id]?.realm || 'town') === realmId() ? n : 0), 0);
+  return b + (state.inventory.seeds || 0) + R().plants.filter((p) => p.stored).length;
 }
 function renderBagBadge() {
   const n = bagCount();
@@ -289,7 +368,7 @@ function openDrink() {
 }
 
 function estimateCoins(capacity, type) {
-  const bonus = state.buildings.some((b) => BUILDING_MAP[b.def].bonus) ? 1.1 : 1;
+  const bonus = G.allBuildings(state).some((b) => BUILDING_MAP[b.def].bonus) ? 1.1 : 1;
   return G.round1((capacity * (type === 'drink' ? DRINK_FACTOR : 1)) / ML_PER_COIN * bonus);
 }
 
@@ -313,17 +392,28 @@ function doDrink(bid, type) {
   renderBagBadge();
   toast(`${t('earned', { n: fmtCoins(res.coins) })} · ${t('wateredAll', { n: res.watered })}${res.bonus ? ' · ' + t('bonusTower') : ''}`, { icon: type === 'drink' ? '🧋' : '💧' });
   setTimeout(() => {
-    scene.sync(state, now());
-    res.sprouts.forEach((p, i) => setTimeout(() => {
+    scene.sync(R(), now());
+    const cur = res.realms[realmId()] || res;
+    cur.sprouts.forEach((p, i) => setTimeout(() => {
       scene.sparkle(p.id);
       toast(t('newSprout', { name: plantName(p.species) }), { icon: '🌱' });
     }, i * 450));
-    if (res.land) {
+    if (cur.land) {
       confetti(80);
-      toast(t('landUnlocked', { n: res.land.cells, size: `${G.landProgress(state).size.w}×${G.landProgress(state).size.h}` }), { icon: '🏝️', ms: 4200 });
+      toast(t('landUnlocked', { n: cur.land.cells, size: `${G.landProgress(R()).size.w}×${G.landProgress(R()).size.h}` }), { icon: '🏝️', ms: 4200 });
       haptic(60);
-    } else if (res.full) toast(t('cityFull'), { icon: '🏡', warn: true, ms: 3500 });
+    } else if (cur.full) toast(t('cityFull'), { icon: '🏡', warn: true, ms: 3500 });
+    // what happened in the other realms
+    const others = Object.entries(res.realms).filter(([id]) => id !== realmId());
+    const parts = others.map(([id, r]) => {
+      const bits = [];
+      if (r.sprouts.length) bits.push(t('otherSprouts', { n: r.sprouts.length }));
+      if (r.land) bits.push(t('otherLand'));
+      return bits.length ? `${REALM_MAP[id].emoji} ${L(REALM_MAP[id].short)} ${bits.join('、')}` : '';
+    }).filter(Boolean);
+    if (parts.length) setTimeout(() => toast(parts.join(' · '), { icon: '🗺️', ms: 3200 }), cur.sprouts.length * 450 + 300);
     if (res.reachedGoal) { confetti(); toast(t('goalReached'), { icon: '🎉', ms: 3500 }); }
+    if (res.newRealms.length) setTimeout(() => { renderHUD(); maybeRealmIntro(); }, 1600);
   }, 1000);
 }
 
@@ -403,7 +493,7 @@ function onTap(pick) {
   if (pick.kind === 'plant' || pick.kind === 'building') { haptic(8); selectObj(pick.kind, pick.id); return; }
   deselect();
   if (pick.locked) {
-    const lp = G.landProgress(state);
+    const lp = G.landProgress(R());
     if (!lp.done) toast(t('landLocked', { n: Math.ceil(lp.remaining) }), { icon: '🔒' });
   }
 }
@@ -427,10 +517,10 @@ function renderInfo() {
   if (!selected) { card.hidden = true; return; }
   let html = '';
   if (selected.kind === 'plant') {
-    const p = state.plants.find((x) => x.id === selected.id);
+    const p = R().plants.find((x) => x.id === selected.id);
     if (!p) { deselect(); return; }
     const sp = PLANT_MAP[p.species];
-    const st = G.plantStatus(state, p, now());
+    const st = G.plantStatus(R(), p, now());
     const lines = [];
     if (p.dead) lines.push(`<span class="pill red">🥀 ${t('deadInfo')}</span>`);
     else if (st.daysDry === 0) lines.push(`<span class="pill green">${t('wateredToday')}</span>`);
@@ -441,12 +531,12 @@ function renderInfo() {
       lines.push(`<span class="pill">🍃 ${t('leaves')} ${p.leaves}</span>`);
       lines.push(`<span class="pill">✨ ${t('perfectDays')} ${p.perfectDays}</span>`);
     }
-    let size = sp.kind === 'wall' ? `1×${p.wall ? BUILDING_MAP[state.buildings.find((b) => b.id === p.wall.b)?.def]?.height || 1 : 1}` : `${sp.size}×${sp.size}`;
+    let size = sp.kind === 'wall' ? `1×${p.wall ? BUILDING_MAP[R().buildings.find((b) => b.id === p.wall.b)?.def]?.height || 1 : 1}` : `${sp.size}×${sp.size}`;
     lines.push(`<span class="pill">📐 ${size}</span>`);
     html = `
       <div class="info-head"><img src="${thumbnail('plant', p.species)}" alt="" />
         <div><div class="info-title">${esc(plantName(p.species))}</div>
-        <div class="info-sub">${t('stage_' + st.stage)} · ${esc(sp.habitat.map((h) => L(HABITAT_TEXT[h])).join(' / '))}</div></div>
+        <div class="info-sub">${t('stage_' + st.stage)} · ${esc(sp.habitat.map((h) => habText(h)).join(' / '))}</div></div>
         <button class="icon-btn info-close" data-i="close" aria-label="${t('close')}">${ICON.close}</button></div>
       <div class="info-lines">${lines.join('')}</div>
       <div class="info-actions">
@@ -456,15 +546,15 @@ function renderInfo() {
           <button class="btn ghost sm" data-i="remove" aria-label="${t('remove')}">${ICON.trash}</button>`}
       </div>`;
   } else {
-    const b = state.buildings.find((x) => x.id === selected.id);
+    const b = R().buildings.find((x) => x.id === selected.id);
     if (!b) { deselect(); return; }
     const def = BUILDING_MAP[b.def];
     const lines = [`<span class="pill">📐 ${sizeText(def.size, def.height)}</span>`];
     if (def.unlocks) lines.push(`<span class="pill green">🌱 ${t('unlocks')}：${esc(plantName(def.unlocks))}</span>`);
-    if (def.walls) lines.push(`<span class="pill">🧱 ${esc(L(HABITAT_TEXT.wall))}</span>`);
-    if (def.moist) lines.push(`<span class="pill">💧 ${esc(L(HABITAT_TEXT.shore))}</span>`);
+    if (def.walls) lines.push(`<span class="pill">🧱 ${esc(habText('wall'))}</span>`);
+    if (def.moist) lines.push(`<span class="pill">💧 ${esc(habText('shore'))}</span>`);
     if (def.bonus) lines.push(`<span class="pill yellow">🪙 +10%</span>`);
-    const canStore = b.def !== 'cottage' || state.buildings.filter((x) => x.def === 'cottage').length > 0;
+    const canStore = b.def !== 'cottage' || R().buildings.filter((x) => x.def === 'cottage').length > 0;
     html = `
       <div class="info-head"><img src="${thumbnail('building', b.def)}" alt="" />
         <div><div class="info-title">${esc(buildingName(b.def))}</div><div class="info-sub">${esc(L(def.desc))}</div></div>
@@ -487,22 +577,22 @@ async function onInfoClick(e) {
   const { kind, id } = selected;
   if (a === 'close') { deselect(); return; }
   if (kind === 'plant') {
-    const p = state.plants.find((x) => x.id === id);
+    const p = R().plants.find((x) => x.id === id);
     if (a === 'move') startPlacing({ type: 'plant', id });
-    if (a === 'store') { G.storePlant(state, id); save(); deselect(); renderAll(); toast(`${plantName(p.species)} → ${t('backpack')}`, { icon: '🎒' }); }
+    if (a === 'store') { G.storePlant(R(), id); save(); deselect(); renderAll(); toast(`${plantName(p.species)} → ${t('backpack')}`, { icon: '🎒' }); }
     if (a === 'remove') {
       if (await confirmBox(p.dead ? t('removeDeadQ') : t('removePlantQ'), { danger: true, okText: t('remove') })) {
-        G.removePlant(state, id); save(); deselect(); renderAll();
+        G.removePlant(R(), id); save(); deselect(); renderAll();
       }
     }
   } else {
-    const b = state.buildings.find((x) => x.id === id);
+    const b = R().buildings.find((x) => x.id === id);
     if (a === 'move') startPlacing({ type: 'moveBuilding', id, rot: b.rot || 0 });
-    if (a === 'turn') { G.rotateBuilding(state, id); save(); scene.sync(state, now()); scene.select(id); }
+    if (a === 'turn') { G.rotateBuilding(R(), id); save(); scene.sync(R(), now()); scene.select(id); }
     if (a === 'store') {
-      const vines = state.plants.some((p) => p.wall && p.wall.b === id) || G.carriedPlants(state, b).length;
+      const vines = R().plants.some((p) => p.wall && p.wall.b === id) || G.carriedPlants(R(), b).length;
       if (vines && !(await confirmBox(t('storeWithVines'), { okText: t('store') }))) return;
-      G.storeBuilding(state, id); save(); deselect(); renderAll();
+      G.storeBuilding(R(), id); save(); deselect(); renderAll();
       toast(`${buildingName(b.def)} → ${t('backpack')}`, { icon: '🎒' });
     }
   }
@@ -512,12 +602,12 @@ async function onInfoClick(e) {
 function placingSize() {
   if (!placing) return 1;
   if (placing.type === 'newBuilding') return BUILDING_MAP[placing.def].size;
-  if (placing.type === 'moveBuilding') return BUILDING_MAP[state.buildings.find((b) => b.id === placing.id).def].size;
-  if (placing.type === 'plant') return PLANT_MAP[state.plants.find((p) => p.id === placing.id).species].size;
+  if (placing.type === 'moveBuilding') return BUILDING_MAP[R().buildings.find((b) => b.id === placing.id).def].size;
+  if (placing.type === 'plant') return PLANT_MAP[R().plants.find((p) => p.id === placing.id).species].size;
   return 1;
 }
 function placingIsWall() {
-  return placing?.type === 'plant' && PLANT_MAP[state.plants.find((p) => p.id === placing.id).species].kind === 'wall';
+  return placing?.type === 'plant' && PLANT_MAP[R().plants.find((p) => p.id === placing.id).species].kind === 'wall';
 }
 
 function startPlacing(spec) {
@@ -527,10 +617,10 @@ function startPlacing(spec) {
   mode = 'place';
   placing = { rot: 0, ...spec, spot: null, valid: false };
   let spots = [];
-  if (spec.type === 'newBuilding') spots = G.validBuildingSpots(state, spec.def);
-  if (spec.type === 'moveBuilding') spots = G.validBuildingSpots(state, state.buildings.find((b) => b.id === spec.id).def, spec.id);
-  if (spec.type === 'plant') spots = G.validPlantSpots(state, state.plants.find((p) => p.id === spec.id).species, spec.id);
-  if (spec.type === 'seed') spots = G.validSeedSpots(state, now());
+  if (spec.type === 'newBuilding') spots = G.validBuildingSpots(R(), spec.def);
+  if (spec.type === 'moveBuilding') spots = G.validBuildingSpots(R(), R().buildings.find((b) => b.id === spec.id).def, spec.id);
+  if (spec.type === 'plant') spots = G.validPlantSpots(R(), R().plants.find((p) => p.id === spec.id).species, spec.id);
+  if (spec.type === 'seed') spots = G.validSeedSpots(R(), now());
   placing.count = spots.length;
   scene.showSpots(spots, placingSize());
   $('#drinkBtn').hidden = true;
@@ -540,18 +630,18 @@ function startPlacing(spec) {
 
 function ghostSpec() {
   if (placing.type === 'newBuilding') return { type: 'building', def: placing.def, rot: placing.rot };
-  if (placing.type === 'moveBuilding') return { type: 'building', def: state.buildings.find((b) => b.id === placing.id).def, rot: placing.rot };
-  if (placing.type === 'plant') return { type: 'plant', plant: state.plants.find((p) => p.id === placing.id) };
+  if (placing.type === 'moveBuilding') return { type: 'building', def: R().buildings.find((b) => b.id === placing.id).def, rot: placing.rot };
+  if (placing.type === 'plant') return { type: 'plant', plant: R().plants.find((p) => p.id === placing.id) };
   return { type: 'seed' };
 }
 
 function checkSpot(spot) {
   if (!spot) return false;
   switch (placing.type) {
-    case 'newBuilding': return !spot.wall && G.canPlaceBuilding(state, placing.def, spot.x, spot.z);
-    case 'moveBuilding': return !spot.wall && G.canPlaceBuilding(state, state.buildings.find((b) => b.id === placing.id).def, spot.x, spot.z, placing.id);
-    case 'plant': return G.canPlacePlant(state, state.plants.find((p) => p.id === placing.id).species, spot, placing.id);
-    case 'seed': return G.seedSpecies(state, spot, now(), () => 0) !== null;
+    case 'newBuilding': return !spot.wall && G.canPlaceBuilding(R(), placing.def, spot.x, spot.z);
+    case 'moveBuilding': return !spot.wall && G.canPlaceBuilding(R(), R().buildings.find((b) => b.id === placing.id).def, spot.x, spot.z, placing.id);
+    case 'plant': return G.canPlacePlant(R(), R().plants.find((p) => p.id === placing.id).species, spot, placing.id);
+    case 'seed': return G.seedSpecies(R(), spot, now(), () => 0) !== null;
     default: return false;
   }
 }
@@ -579,7 +669,7 @@ function placeTap(pick) {
 
 function invalidReason(spot) {
   if (!spot || spot.wall) return t('reasonHabitat');
-  const info = G.cellInfo(state, spot.x, spot.z);
+  const info = G.cellInfo(R(), spot.x, spot.z);
   if (!info.unlocked) return t('reasonLocked');
   const selfId = placing.id;
   if ((info.building && info.building.id !== selfId && !(BUILDING_MAP[info.building.def].pond && placing.type !== 'newBuilding' && placing.type !== 'moveBuilding')) || (info.plant && info.plant.id !== selfId)) return t('reasonOccupied');
@@ -613,14 +703,14 @@ function confirmPlace() {
   const p = placing;
   let focusId = null;
   if (p.type === 'newBuilding') {
-    const b = G.placeBuilding(state, p.def, p.spot.x, p.spot.z);
+    const b = G.placeBuilding(R(), p.def, p.spot.x, p.spot.z);
     if (b) { b.rot = p.rot; focusId = b.id; }
   } else if (p.type === 'moveBuilding') {
-    if (G.moveBuilding(state, p.id, p.spot.x, p.spot.z)) { state.buildings.find((b) => b.id === p.id).rot = p.rot; focusId = p.id; }
+    if (G.moveBuilding(R(), p.id, p.spot.x, p.spot.z)) { R().buildings.find((b) => b.id === p.id).rot = p.rot; focusId = p.id; }
   } else if (p.type === 'plant') {
-    if (G.movePlant(state, p.id, p.spot)) focusId = p.id;
+    if (G.movePlant(R(), p.id, p.spot)) focusId = p.id;
   } else if (p.type === 'seed') {
-    const plant = G.plantSeed(state, p.spot, now());
+    const plant = G.plantSeed(R(), p.spot, now());
     if (plant) { focusId = plant.id; toast(t('sproutedFromSeed', { name: plantName(plant.species) }), { icon: '🌱', ms: 3200 }); }
   }
   save();
@@ -641,8 +731,8 @@ function exitPlace() {
 function openBackpack() {
   if (mode === 'place') exitPlace();
   const inv = state.inventory;
-  const bItems = Object.entries(inv.buildings).filter(([, n]) => n > 0);
-  const stored = state.plants.filter((p) => p.stored);
+  const bItems = Object.entries(inv.buildings).filter(([id, n]) => n > 0 && (BUILDING_MAP[id].realm || 'town') === realmId());
+  const stored = R().plants.filter((p) => p.stored);
   const empty = !bItems.length && !stored.length && !(inv.seeds > 0);
   const sheet = openSheet(`
     <div class="sheet-head"><h2>🎒 ${t('backpackTitle')}</h2><button class="icon-btn" data-close aria-label="${t('close')}">${ICON.close}</button></div>
@@ -666,20 +756,21 @@ function openBackpack() {
     if (a === 'seed') startPlacing({ type: 'seed' });
     if (a === 'building') startPlacing({ type: 'newBuilding', def: b.dataset.id });
     if (a === 'plant') startPlacing({ type: 'plant', id: b.dataset.id });
-    if (a === 'del') { G.removePlant(state, b.dataset.id); save(); sheet.close(); renderAll(); openBackpack(); }
+    if (a === 'del') { G.removePlant(R(), b.dataset.id); save(); sheet.close(); renderAll(); openBackpack(); }
   });
 }
 
 /* ================================================================ shop */
 function renderShop() {
-  const items = shopCat === 'seed' ? [] : BUILDINGS.filter((b) => b.cat === shopCat);
+  const items = shopCat === 'seed' ? [] : BUILDINGS.filter((b) => b.cat === shopCat && (b.realm || 'town') === realmId());
+  const rm = REALM_MAP[realmId()];
   const meta = (d) => {
     const m = [`<span class="pill">📐 ${sizeText(d.size, d.height)}</span>`];
     if (d.unlocks) m.push(`<span class="pill green">🌱 ${esc(plantName(d.unlocks))}</span>`);
     if (d.moist) m.push('<span class="pill">💧</span>');
     if (d.walls) m.push('<span class="pill">🧱</span>');
     if (d.bonus) m.push('<span class="pill yellow">+10%</span>');
-    const owned = (state.inventory.buildings[d.id] || 0) + state.buildings.filter((b) => b.def === d.id).length;
+    const owned = (state.inventory.buildings[d.id] || 0) + R().buildings.filter((b) => b.def === d.id).length;
     if (owned) m.push(`<span class="pill">${t('owned', { n: owned })}</span>`);
     return m.join('');
   };
@@ -689,6 +780,7 @@ function renderShop() {
         <div><div class="section-label" style="margin:0">${t('coins')}</div><div class="big">${coinSVG(30)}${fmtCoins(state.coins)}</div></div>
         <button class="btn ghost sm" data-s="bag">${ICON.bag}${t('backpack')}${bagCount() ? ` (${bagCount()})` : ''}</button>
       </div>
+      <div class="realm-banner realm-${realmId()}"><span>${rm.emoji}</span><div><b>${esc(t('realmShop', { name: L(rm.name) }))}</b><small>${esc(t('realmShopHint'))}</small></div></div>
       <div class="seg" id="shopSeg">
         ${['building', 'deco', 'seed'].map((c) => `<button data-cat="${c}" class="${shopCat === c ? 'on' : ''}">${t(c === 'building' ? 'shopBuildings' : c === 'deco' ? 'shopDeco' : 'shopSeeds')}</button>`).join('')}
       </div>
@@ -824,10 +916,15 @@ function calendarHTML() {
 }
 
 function dexHTML() {
-  const list = dexKind === 'plant' ? PLANTS : BUILDINGS;
+  dexRealm ||= realmId();
+  const open = G.unlockedRealms(state);
+  const list = (dexKind === 'plant' ? PLANTS : BUILDINGS).filter((x) => (x.realm || 'town') === dexRealm);
   const disc = dexKind === 'plant' ? state.discovered.plants : state.discovered.buildings;
   const got = list.filter((x) => disc[x.id]).length;
   return `
+    <div class="seg realm-seg">
+      ${REALMS.map((r) => `<button data-dexrealm="${r.id}" class="${dexRealm === r.id ? 'on' : ''}">${open.includes(r.id) ? r.emoji : '🔒'} ${esc(L(r.short))}</button>`).join('')}
+    </div>
     <div class="seg" id="dexSeg">
       <button data-dex="plant" class="${dexKind === 'plant' ? 'on' : ''}">🌿 ${t('plantDex')}</button>
       <button data-dex="building" class="${dexKind === 'building' ? 'on' : ''}">🏠 ${t('buildingDex')}</button>
@@ -876,6 +973,8 @@ async function onDiaryClick(e) {
   if (pane) { diaryPane = pane.dataset.pane; renderDiary(); return; }
   const dx = e.target.closest('[data-dex]');
   if (dx) { dexKind = dx.dataset.dex; renderDiary(); return; }
+  const dr = e.target.closest('[data-dexrealm]');
+  if (dr) { dexRealm = dr.dataset.dexrealm; renderDiary(); return; }
   const cal = e.target.closest('[data-cal]');
   if (cal) {
     let { y, m } = calMonth; m += Number(cal.dataset.cal);
@@ -916,14 +1015,16 @@ function openDexDetail(kind, id) {
   const disc = (kind === 'plant' ? state.discovered.plants : state.discovered.buildings)[id];
   const rows = [];
   if (kind === 'plant') {
-    rows.push([t('habitat'), x.habitat.map((h) => L(HABITAT_TEXT[h])).join('、')]);
+    rows.push([t('realmLabel'), `${REALM_MAP[x.realm || 'town'].emoji} ${L(REALM_MAP[x.realm || 'town'].name)}`]);
+    rows.push([t('habitat'), x.habitat.map((h) => habText(h, x.realm || 'town')).join('、')]);
     rows.push([t('tiersLabel'), x.tiers.map((k) => `${TIERS[k].emoji} ${L(TIERS[k].name)}`).join('　')]);
     if (x.requires) rows.push([t('requiresLabel'), `🏠 ${buildingName(x.requires)}`]);
     rows.push([t('size'), x.kind === 'wall' ? '1×1 / 1×2 🧱' : `${x.size}×${x.size}`]);
     const feats = [x.bloom ? `🌸 ${t('canBloom')}` : '', x.fruit ? `🍎 ${t('canFruit')}` : ''].filter(Boolean).join('　');
     if (feats) rows.push(['✨', feats]);
-    if (disc) rows.push(['🏙️', t('inCity', { n: state.plants.filter((p) => p.species === id && !p.dead).length })]);
+    if (disc) rows.push(['🏙️', t('inCity', { n: G.allPlants(state).filter((p) => p.species === id && !p.dead).length })]);
   } else {
+    rows.push([t('realmLabel'), `${REALM_MAP[x.realm || 'town'].emoji} ${L(REALM_MAP[x.realm || 'town'].name)}`]);
     rows.push([t('size'), sizeText(x.size, x.height)]);
     rows.push(['🪙', fmtCoins(x.price)]);
     if (x.unlocks) rows.push([t('unlocks'), `🌱 ${plantName(x.unlocks)}`]);
@@ -934,21 +1035,22 @@ function openDexDetail(kind, id) {
     <div class="dex-detail ${disc ? '' : 'locked'}">
       <img src="${thumbnail(kind, id)}" alt="" class="animate__animated animate__bounceIn" />
       <h2>${esc(showName ? L(x.name) : t('unknown'))}</h2>
-      <p>${esc(disc ? L(x.desc) : `${t('hint')}：${kind === 'plant' ? x.habitat.map((h) => L(HABITAT_TEXT[h])).join('、') : L(x.desc)}`)}</p>
+      <p>${esc(disc ? L(x.desc) : `${t('hint')}：${kind === 'plant' ? x.habitat.map((h) => habText(h, x.realm || 'town')).join('、') : L(x.desc)}`)}</p>
       <div class="kv">${rows.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>
       <div class="row end" style="margin-top:14px"><button class="btn sm" data-close>${t('close')}</button></div>
     </div>`);
 }
 
 function maybeMorningReview() {
-  if (!hasUnseenReview()) { $('#diaryDot').hidden = true; return; }
+  if (!hasUnseenReview()) { $('#diaryDot').hidden = true; return false; }
   $('#diaryDot').hidden = false;
   const m = openModal(`
     <h2 style="text-align:center">☀️ ${t('morningTitle')}</h2>
     ${coverHTML()}
     <div class="row" style="margin-top:14px"><button class="btn ghost block" data-a="diary">📔 ${t('diaryTab')}</button><button class="btn block" data-close>${t('ok')}</button></div>`,
-  { onClose: () => markReviewSeen() });
+  { onClose: () => { markReviewSeen(); setTimeout(maybeRealmIntro, 300); } });
   m.el.addEventListener('click', (e) => { if (e.target.closest('[data-a="diary"]')) { m.close(); switchTab('diary'); } });
+  return true;
 }
 
 /* ================================================================ settings */
@@ -1033,11 +1135,11 @@ async function takePhoto() {
   x.fillStyle = '#ffffff'; x.fillRect(0, 0, cv.width, cv.height);
   x.drawImage(img, pad, pad);
   const s = cv.width / 400;
-  const stats = G.cityStats(state);
+  const stats = G.cityStats(R());
   const dayN = G.dayDiff(state.startDay, today()) + 1;
   x.fillStyle = '#2c4058';
   x.font = `900 ${Math.round(22 * s)}px Nunito, "PingFang TC", "Noto Sans TC", sans-serif`;
-  x.fillText(`💧 ${t('photoTitle')}`, pad, img.height + pad + footer * 0.42);
+  x.fillText(`${REALM_MAP[realmId()].emoji} ${realmId() === 'town' ? t('photoTitle') : L(REALM_MAP[realmId()].name)}`, pad, img.height + pad + footer * 0.42);
   x.font = `700 ${Math.round(13 * s)}px Nunito, "PingFang TC", "Noto Sans TC", sans-serif`;
   x.fillStyle = '#6b7f99';
   const d = new Date(now());

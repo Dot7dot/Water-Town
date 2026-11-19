@@ -3,6 +3,7 @@ import {
   GRID, TERRAIN, LEGACY_TERRAIN, LAND_LEVELS, ML_PER_COIN, DRINK_FACTOR, DEFAULT_GOAL, SPROUT_EVERY_ML, LEAF_EVERY_ML,
   PERFECT_MIN, PERFECT_MAX, DIE_AFTER_DRY_DAYS, SEED_PRICE, TIERS, TIER_ORDER,
   PLANTS, PLANT_MAP, BUILDINGS, BUILDING_MAP, BOTTLE_PRESETS,
+  REALMS, REALM_MAP, REALM_ORDER, REALM_UNLOCK_LEVEL,
 } from './data.js';
 
 /* ------------------------------------------------------------------ dates */
@@ -26,6 +27,81 @@ export const round1 = (n) => Math.round(n * 10) / 10;
 
 /* ------------------------------------------------------------------ state */
 function nid(state, prefix) { return `${prefix}${state.nextId++}`; }
+
+/* ------------------------------------------------------------------ realms */
+// The home town keeps its data at the top level of the save (so old saves keep working).
+// Other realms keep their own land, plants and buildings in state.realms[id]. A "realm view"
+// is a Proxy that reads/writes those per-realm keys from the realm and everything shared
+// (coins, logs, bottles, inventory, diary, ids...) from the save, so every rule below works
+// unchanged on any realm.
+const REALM_KEYS = new Set(['terrain', 'landLevel', 'sproutProgress', 'leafCarry', 'buildings', 'plants', 'realmId', 'eff', 'unlockedAt']);
+const ROOT = Symbol('root');
+export function realmView(state, id = 'town') {
+  const root = rootOf(state);
+  if (id === 'town' || !root.realms || !root.realms[id]) return root;
+  const r = root.realms[id];
+  return new Proxy(root, {
+    get(t, k) { if (k === ROOT) return t; return REALM_KEYS.has(k) ? r[k] : t[k]; },
+    set(t, k, v) { if (REALM_KEYS.has(k)) r[k] = v; else t[k] = v; return true; },
+    has(t, k) { return REALM_KEYS.has(k) ? k in r : k in t; },
+  });
+}
+export const rootOf = (state) => state[ROOT] || state;
+export const realmOf = (state) => state.realmId || 'town';
+export function unlockedRealms(state) {
+  const root = rootOf(state);
+  return REALM_ORDER.filter((id) => id === 'town' || (root.realms && root.realms[id]));
+}
+export function allPlants(state) {
+  const root = rootOf(state);
+  return unlockedRealms(root).flatMap((id) => realmView(root, id).plants);
+}
+export function allBuildings(state) {
+  const root = rootOf(state);
+  return unlockedRealms(root).flatMap((id) => realmView(root, id).buildings);
+}
+
+function createRealm(root, id, now) {
+  const def = REALM_MAP[id];
+  const today = dayKey(now);
+  root.realms[id] = {
+    realmId: id, terrain: def.terrain.slice(), landLevel: 0, sproutProgress: 0, leafCarry: 0, eff: 0,
+    buildings: [], plants: [], unlockedAt: now,
+  };
+  const R = realmView(root, id);
+  const home = { id: nid(R, 'b'), def: def.starter.building, x: 4, z: 3, rot: 0 };
+  R.buildings.push(home);
+  if (!root.discovered.buildings[home.def]) root.discovered.buildings[home.def] = today;
+  for (const [sp, x, z] of def.starter.plants) addPlant(R, sp, { x, z }, today);
+  addPlant(R, def.starter.vine, { wall: { b: home.id, side: 0, u: 0 } }, today);
+}
+
+// A realm opens when the previous realm's land reaches 7x7. Returns the ids that just opened.
+export function updateRealms(state, now) {
+  const root = rootOf(state);
+  root.realms ||= {};
+  const opened = [];
+  for (let i = 1; i < REALM_ORDER.length; i++) {
+    const id = REALM_ORDER[i];
+    if (root.realms[id]) continue;
+    const prev = REALM_ORDER[i - 1];
+    if (prev !== 'town' && !root.realms[prev]) break;
+    if ((realmView(root, prev).landLevel ?? 0) < REALM_UNLOCK_LEVEL) break;
+    createRealm(root, id, now);
+    opened.push(id);
+  }
+  return opened;
+}
+
+// how far the previous realm is from opening `id` (for the locked arrow)
+export function realmRequirement(state, id) {
+  const i = REALM_ORDER.indexOf(id);
+  if (i <= 0) return null;
+  const prev = REALM_ORDER[i - 1];
+  const r = LAND_LEVELS[realmView(rootOf(state), prev).landLevel ?? 0].rect;
+  const need = LAND_LEVELS[REALM_UNLOCK_LEVEL].rect;
+  return { prev, size: { w: r[2] - r[0] + 1, h: r[3] - r[1] + 1 }, need: { w: need[2] - need[0] + 1, h: need[3] - need[1] + 1 } };
+}
 
 export function createInitialState(now, lang = 'zh') {
   const today = dayKey(now);
@@ -80,6 +156,10 @@ export function migrate(state) {
   }
   state.landLevel = Math.max(0, Math.min(LAND_LEVELS.length - 1, state.landLevel || 0));
   updateLand(state);
+  state.realms ||= {};
+  for (const r of Object.values(state.realms)) { r.buildings ||= []; r.plants ||= []; r.eff ||= 0; r.leafCarry ||= 0; r.sproutProgress ||= 0; }
+  if (!REALM_ORDER.includes(state.activeRealm) || !unlockedRealms(state).includes(state.activeRealm)) state.activeRealm = 'town';
+  updateRealms(state, Date.now());
   return state;
 }
 
@@ -133,8 +213,11 @@ export function lifetimeEff(state) {
   return state.logs.reduce((sum, l) => sum + logEff(l), 0);
 }
 // Opens new land when the lifetime water total passes the next threshold. Land never closes again.
+function landEff(state) {
+  return realmOf(state) === 'town' ? lifetimeEff(state) : (state.eff || 0);
+}
 export function updateLand(state) {
-  const total = lifetimeEff(state);
+  const total = landEff(state);
   const before = state.landLevel;
   while (state.landLevel < LAND_LEVELS.length - 1 && total >= LAND_LEVELS[state.landLevel + 1].need) state.landLevel += 1;
   if (state.landLevel === before) return null;
@@ -144,7 +227,7 @@ export function updateLand(state) {
 export function landProgress(state) {
   const level = state.landLevel;
   const max = LAND_LEVELS.length - 1;
-  const total = lifetimeEff(state);
+  const total = landEff(state);
   const r = LAND_LEVELS[level].rect;
   const size = { w: r[2] - r[0] + 1, h: r[3] - r[1] + 1 };
   if (level >= max) return { level, max, total, done: true, size, frac: 1 };
@@ -288,7 +371,7 @@ function speciesMatches(sp, tokens) { return sp.habitat.some((h) => tokens.has(h
 // Can a plant species be put on this spot?  spot = {x,z} or {wall:{b,side,u}}
 export function canPlacePlant(state, speciesId, spot, ignorePlantId = null, idx = buildIndex(state)) {
   const sp = PLANT_MAP[speciesId];
-  if (!sp) return false;
+  if (!sp || (sp.realm || 'town') !== realmOf(state)) return false;
   if (sp.kind === 'wall') {
     if (!spot.wall) return false;
     const b = state.buildings.find((x) => x.id === spot.wall.b);
@@ -308,7 +391,7 @@ export function canPlacePlant(state, speciesId, spot, ignorePlantId = null, idx 
 
 export function canPlaceBuilding(state, defId, x, z, ignoreBuildingId = null) {
   const def = BUILDING_MAP[defId];
-  if (!def) return false;
+  if (!def || (def.realm || 'town') !== realmOf(state)) return false;
   const moving = ignoreBuildingId ? state.buildings.find((b) => b.id === ignoreBuildingId) : null;
   const carried = moving ? new Set(carriedPlants(state, moving).map((p) => p.id)) : new Set();
   const idx = buildIndex(state);
@@ -433,6 +516,7 @@ function freeGroundSpots(state, idx, size) {
 }
 
 function requiresOk(state, sp) { return !sp.requires || hasBuilding(state, sp.requires); }
+const realmPlants = (state) => PLANTS.filter((sp) => (sp.realm || 'town') === realmOf(state));
 
 function pickWeighted(items, weightFn, rnd) {
   const total = items.reduce((s, it) => s + weightFn(it), 0);
@@ -457,7 +541,7 @@ export function spawnNatural(state, now, rnd = Math.random) {
   const tier = hydrationTier(state, now);
   for (const t of [tier, ...tiersByDistance(tier).slice(1, 2)]) {
     const options = [];
-    for (const sp of PLANTS) {
+    for (const sp of realmPlants(state)) {
       if (!sp.tiers.includes(t) || !requiresOk(state, sp)) continue;
       const pool = sp.kind === 'wall' ? walls : sp.size === 2 ? spots2 : spots1;
       const spots = pool.filter((s) => speciesMatches(sp, s.tokens));
@@ -495,7 +579,7 @@ export function seedSpecies(state, spot, now, rnd = Math.random) {
   }
   const tier = hydrationTier(state, now);
   for (const t of tiersByDistance(tier)) {
-    const options = PLANTS.filter((sp) => sp.size === 1 && (sp.kind === 'wall') === !!spot.wall && sp.tiers.includes(t) && requiresOk(state, sp) && speciesMatches(sp, tokens));
+    const options = realmPlants(state).filter((sp) => sp.size === 1 && (sp.kind === 'wall') === !!spot.wall && sp.tiers.includes(t) && requiresOk(state, sp) && speciesMatches(sp, tokens));
     if (options.length) return options[Math.floor(rnd() * options.length)].id;
   }
   return null;
@@ -505,7 +589,7 @@ export function validSeedSpots(state, now) {
   const idx = buildIndex(state);
   const out = [];
   for (const s of freeGroundSpots(state, idx, 1)) {
-    if (PLANTS.some((sp) => sp.size === 1 && sp.kind !== 'wall' && requiresOk(state, sp) && speciesMatches(sp, s.tokens))) out.push({ x: s.x, z: s.z });
+    if (realmPlants(state).some((sp) => sp.size === 1 && sp.kind !== 'wall' && requiresOk(state, sp) && speciesMatches(sp, s.tokens))) out.push({ x: s.x, z: s.z });
   }
   return out.concat(allWallSlots(state, idx));
 }
@@ -520,6 +604,7 @@ export function plantSeed(state, spot, now, rnd = Math.random) {
 
 /* ----------------------------------------------------------- drinking */
 export function drink(state, bottleId, type, now, rnd = Math.random) {
+  state = rootOf(state);
   const bottle = state.bottles.find((b) => b.id === bottleId);
   if (!bottle) return null;
   const today = dayKey(now);
@@ -527,7 +612,7 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
   const factor = type === 'drink' ? DRINK_FACTOR : 1;
   const eff = amount * factor;
   let coins = eff / ML_PER_COIN;
-  const bonus = state.buildings.some((b) => BUILDING_MAP[b.def].bonus) ? 0.1 : 0;
+  const bonus = allBuildings(state).some((b) => BUILDING_MAP[b.def].bonus) ? 0.1 : 0;
   coins = round1(coins * (1 + bonus));
   const before = dayStats(state, today).eff;
   const log = {
@@ -536,14 +621,35 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
   };
   state.logs.push(log);
   state.coins = round1(state.coins + coins);
+
+  // every open realm is watered and grows with the same drink
+  const realms = {};
+  let watered = 0;
+  for (const id of unlockedRealms(state)) {
+    const R = realmView(state, id);
+    if (id !== 'town') R.eff = (R.eff || 0) + eff;
+    realms[id] = growRealm(R, eff, today, now, rnd);
+    watered += realms[id].watered;
+  }
+  const newRealms = updateRealms(state, now);
+  const after = before + eff;
+  return {
+    log, coins, bonus, ...realms.town, realms, newRealms, watered,
+    reachedGoal: before < state.goal && after >= state.goal,
+    tier: hydrationTier(state, now),
+  };
+}
+
+// irrigation, leaves, land expansion and new sprouts for one realm
+function growRealm(state, eff, today, now, rnd) {
   const land = updateLand(state);
 
-  // 1) irrigation: every drink waters every living plant in town
+  // 1) irrigation: every drink waters every living plant
   const alive = state.plants.filter((p) => !p.dead);
   for (const p of alive) p.lastWatered = today;
 
   // 2) leaves: every 100 ml (effective) grows one more leaf on the plant with the fewest leaves
-  state.leafCarry += eff;
+  state.leafCarry = (state.leafCarry || 0) + eff;
   const grown = new Set();
   while (state.leafCarry >= LEAF_EVERY_ML) {
     state.leafCarry -= LEAF_EVERY_ML;
@@ -557,7 +663,7 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
   }
 
   // 3) new sprouts every 500 ml (effective)
-  state.sproutProgress += eff;
+  state.sproutProgress = (state.sproutProgress || 0) + eff;
   const sprouts = [];
   let full = false;
   while (state.sproutProgress >= SPROUT_EVERY_ML && sprouts.length < 3) {
@@ -567,13 +673,7 @@ export function drink(state, bottleId, type, now, rnd = Math.random) {
     sprouts.push(p);
   }
   if (!full) state.sproutProgress = Math.min(state.sproutProgress, SPROUT_EVERY_ML * 2);
-  const after = before + eff;
-  return {
-    log, coins, bonus, sprouts, grown: [...grown], full, land,
-    watered: alive.length,
-    reachedGoal: before < state.goal && after >= state.goal,
-    tier: hydrationTier(state, now),
-  };
+  return { sprouts, grown: [...grown], full, land, watered: alive.length };
 }
 
 /* ------------------------------------------------- "too long without water" */
@@ -592,10 +692,13 @@ export function thirstInfo(state, now) {
 }
 
 export function deleteLog(state, logId, now) {
+  state = rootOf(state);
   const today = dayKey(now);
   const i = state.logs.findIndex((l) => l.id === logId);
   if (i < 0 || state.logs[i].day !== today) return false;
-  state.coins = Math.max(0, round1(state.coins - state.logs[i].coins));
+  const log = state.logs[i];
+  state.coins = Math.max(0, round1(state.coins - log.coins));
+  for (const r of Object.values(state.realms || {})) if (log.ts >= (r.unlockedAt || 0)) r.eff = Math.max(0, (r.eff || 0) - logEff(log));
   state.logs.splice(i, 1);
   return true;
 }
@@ -643,7 +746,9 @@ export function scoreDay(state, day) {
 }
 
 export function processDays(state, now) {
+  state = rootOf(state);
   const today = dayKey(now);
+  const plants = allPlants(state);
   const closed = [];
   const deaths = [];
   if (!state.lastProcessed) state.lastProcessed = today;
@@ -651,7 +756,7 @@ export function processDays(state, now) {
   let guard = 0;
   while (d < today && guard++ < 400) {
     const entry = scoreDay(state, d);
-    for (const p of state.plants) {
+    for (const p of plants) {
       if (p.dead || p.lastWatered !== d) continue;
       p.wateredDays += 1;
       if (entry.perfect) p.perfectDays += 1;
@@ -662,7 +767,7 @@ export function processDays(state, now) {
     // deaths happen at the start of the next day
     const next = addDays(d, 1);
     const died = [];
-    for (const p of state.plants) {
+    for (const p of plants) {
       if (p.dead) continue;
       if (dayDiff(p.lastWatered, next) > DIE_AFTER_DRY_DAYS) {
         p.dead = true; p.diedOn = next; died.push(p.species); deaths.push(p);
@@ -670,7 +775,7 @@ export function processDays(state, now) {
     }
     entry.died = died.length;
     if (died.length) entry.msgs.push('fb_died');
-    entry.thirsty = state.plants.filter((p) => !p.dead && dayDiff(p.lastWatered, next) >= 2).length;
+    entry.thirsty = plants.filter((p) => !p.dead && dayDiff(p.lastWatered, next) >= 2).length;
     if (d >= state.startDay) { state.diary[d] = entry; closed.push(entry); }
     d = next;
   }

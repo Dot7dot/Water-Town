@@ -1,3 +1,8 @@
+import {
+  REALMS, REALM_MAP, REALM_ORDER, REALM_UNLOCK_LEVEL, HABITAT_TEXT_BY_REALM, REALM_TIPS, FOREST_TERRAIN, SEA_TERRAIN,
+  REALM_PLANTS, REALM_BUILDINGS,
+} from './realmdata.js';
+
 // Static game data: bottles, plants, buildings, tips.
 // Every text has { zh, en } so it can follow the language switch.
 
@@ -102,7 +107,7 @@ export const HABITAT_TEXT = {
 // Plants. size = footprint (1 or 2). kind 'wall' = flat texture on a wall.
 // tiers = hydration tiers under which it can sprout naturally.
 // requires = a building that must exist in the city for it to sprout.
-export const PLANTS = [
+const TOWN_PLANTS = [
   // --- water ---
   { id: 'duckweed', habitat: ['water'], tiers: ['low', 'good'], size: 1, bloom: false, fruit: false,
     name: { zh: '浮萍', en: 'Duckweed' },
@@ -185,12 +190,17 @@ export const PLANTS = [
     desc: { zh: '水分豐沛時爬上牆壁，最後掛滿一串串紫色葡萄。', en: 'Climbs walls when you are well hydrated and fills with purple grapes.' } },
 ];
 
+const FLOATING = new Set(['duckweed', 'waterlily', 'lotus']);
+export const PLANTS = [
+  ...TOWN_PLANTS.map((p) => ({ realm: 'town', ...(FLOATING.has(p.id) ? { float: true } : {}), ...p })),
+  ...REALM_PLANTS,
+];
 export const PLANT_MAP = Object.fromEntries(PLANTS.map((p) => [p.id, p]));
 
 // Buildings / decorations. size = footprint, height = 1 or 2 cubes (never above 2x2x2).
 // walls: climbing plants can grow on its walls.
 // placeOn: 'land' (grass/sand) or 'river'.
-export const BUILDINGS = [
+const TOWN_BUILDINGS = [
   { id: 'cottage', price: 25, size: 1, height: 1, walls: true, placeOn: 'land', cat: 'building',
     name: { zh: '小木屋', en: 'Cottage' },
     desc: { zh: '溫馨的小家。牆面可以讓藤蔓攀爬。', en: 'A cozy home. Vines can climb its walls.' } },
@@ -238,7 +248,15 @@ export const BUILDINGS = [
     desc: { zh: '寄一封信給明天的自己：記得喝水。', en: 'A letter to tomorrow-you: drink water.' } },
 ];
 
+export const BUILDINGS = [...TOWN_BUILDINGS.map((b) => ({ realm: 'town', ...b })), ...REALM_BUILDINGS];
 export const BUILDING_MAP = Object.fromEntries(BUILDINGS.map((b) => [b.id, b]));
+export {
+  REALMS, REALM_MAP, REALM_ORDER, REALM_UNLOCK_LEVEL, HABITAT_TEXT_BY_REALM, REALM_TIPS, FOREST_TERRAIN, SEA_TERRAIN,
+};
+// habitat label for a token in a realm
+export function habitatText(token, realm = 'town') {
+  return (HABITAT_TEXT_BY_REALM[realm] || {})[token] || HABITAT_TEXT[token];
+}
 
 // Tips for the loading screen: environment & health
 export const TIPS = [

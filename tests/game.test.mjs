@@ -184,4 +184,77 @@ const fullLand = (s) => { s.landLevel = MAX; return s; };
   assert.equal(old.remindHours, 3, 'old saves get the default interval');
 }
 
+/* ---------------------------------------------------- realms (rainforest, undersea) */
+{
+  const s = G.createInitialState(now);
+  assert.deepEqual(G.unlockedRealms(s), ['town']);
+  assert.equal(G.realmRequirement(s, 'forest').need.w, 7);
+  const w = G.addBottle(s, { name: 'Big', capacity: 1000, icon: 'jug' });
+  let t = now;
+  let opened = [];
+  while (s.landLevel < 9) { t += 3 * 3600e3; opened = opened.concat(G.drink(s, w.id, 'water', t).newRealms); }
+  assert.deepEqual(opened, ['forest'], 'town 7x7 opens the rainforest');
+  assert.deepEqual(G.unlockedRealms(s), ['town', 'forest']);
+  const F = G.realmView(s, 'forest');
+  assert.equal(G.realmOf(F), 'forest');
+  assert.equal(F.landLevel, 0, 'the new realm starts small');
+  const [x0, z0, x1, z1] = G.landRect(F);
+  let water = 0;
+  for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) if (G.terrainAt(F, x, z) === 'W') water++;
+  assert.equal(water, 1, 'with one small water cell');
+  for (const p of F.plants) assert.ok(G.canPlacePlant(F, p.species, spotOf(p), p.id), 'forest starter ' + p.species);
+  // species and buildings stay in their own realm
+  F.landLevel = MAX;
+  assert.equal(G.canPlacePlant(F, 'cactus', { x: 0, z: 0 }), false, 'no town plants in the forest');
+  assert.equal(G.canPlacePlant(s, 'banana', { x: 0, z: 0 }), false, 'no forest plants in town');
+  assert.equal(G.canPlaceBuilding(F, 'cottage', 0, 2), false);
+  assert.equal(G.canPlaceBuilding(F, 'torch', 0, 2), true);
+  assert.equal(G.canPlacePlant(F, 'giantlily', { x: 0, z: 4 }), false, 'giant lily needs a cenote, not the river');
+  assert.equal(G.canPlacePlant(F, 'hyacinth', { x: 0, z: 4 }), true);
+  assert.equal(G.canPlacePlant(F, 'agave', { x: 4, z: 0 }), true, 'agave on the limestone plaza');
+  assert.equal(G.canPlacePlant(F, 'agave', { x: 0, z: 0 }), false, 'agave not on the jungle floor');
+  s.coins = 500;
+  assert.ok(G.buy(s, 'cenote', now));
+  assert.ok(G.placeBuilding(F, 'cenote', 0, 7));
+  assert.equal(G.canPlacePlant(F, 'giantlily', { x: 1, z: 7 }), true, 'giant lily in the cenote');
+  F.landLevel = 0;
+  // drinking grows every open realm; the forest counts water from the day it opened
+  const before = F.plants.length;
+  const r = G.drink(s, w.id, 'water', t + 3600e3);
+  assert.equal(F.eff, 1000);
+  assert.ok(r.realms.forest.sprouts.length >= 1, 'the forest sprouts too');
+  assert.ok(F.plants.length > before);
+  for (const p of F.plants.slice(before)) assert.equal(G.PLANT_MAP[p.species].realm, 'forest', 'forest sprouts are forest species');
+  assert.ok(F.plants.every((p) => p.lastWatered === G.dayKey(t + 3600e3)), 'forest plants watered');
+  G.deleteLog(s, s.logs[s.logs.length - 1].id, t + 3600e3);
+  assert.equal(F.eff, 0, 'deleting a record also removes it from the forest');
+  // forest 7x7 opens the undersea
+  while (F.landLevel < 9) { t += 3 * 3600e3; G.drink(s, w.id, 'water', t); }
+  assert.deepEqual(G.unlockedRealms(s), ['town', 'forest', 'sea']);
+  const S = G.realmView(s, 'sea');
+  for (const p of S.plants) assert.ok(G.canPlacePlant(S, p.species, spotOf(p), p.id), 'sea starter ' + p.species);
+  S.landLevel = MAX;
+  assert.equal(G.canPlacePlant(S, 'crinoid', { x: 4, z: 2 }), true, 'sea lily in the trench');
+  assert.equal(G.canPlacePlant(S, 'crinoid', { x: 3, z: 0 }), false, 'sea lily not on the reef');
+  assert.equal(G.canPlacePlant(S, 'seagrass', { x: 0, z: 0 }), true, 'seagrass on sand');
+  assert.equal(G.canPlacePlant(S, 'seagrass', { x: 3, z: 0 }), false, 'seagrass not on rock');
+  assert.equal(G.canPlacePlant(S, 'kelp', { x: 4, z: 1 }), true, 'kelp on reef by the trench');
+  assert.equal(G.canPlacePlant(S, 'kelp', { x: 0, z: 6 }), false, 'kelp not on reef far from the trench');
+  assert.equal(G.canPlacePlant(S, 'tubeworm', { x: 4, z: 1 }), true, 'habitat ok');
+  s.inventory.seeds = 5;
+  for (let i = 0; i < 20; i++) { s.sproutProgress = 0; G.spawnNatural(S, t); }
+  assert.ok(!S.plants.some((p) => p.species === 'tubeworm'), 'tube worms need a vent');
+  // plants in every realm die after three dry days
+  G.processDays(s, t + 5 * 86400e3);
+  assert.ok(G.allPlants(s).every((p) => p.dead), 'all realms dry out together');
+  // a saved game with the full legacy island opens the rainforest on load
+  const legacy = G.createInitialState(now); delete legacy.terrain; delete legacy.landLevel; delete legacy.realms;
+  G.migrate(legacy);
+  assert.deepEqual(G.unlockedRealms(legacy), ['town', 'forest']);
+  assert.equal(legacy.activeRealm, 'town');
+  const json = JSON.parse(JSON.stringify(legacy));
+  G.migrate(json);
+  assert.equal(G.realmView(json, 'forest').plants.length, 3, 'realms survive save/load');
+}
+
 console.log('all tests passed');
