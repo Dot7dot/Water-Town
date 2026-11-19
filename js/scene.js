@@ -2,8 +2,31 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { RoundedBoxGeometry } from '../vendor/RoundedBoxGeometry.js';
 import { GRID, PLANT_MAP, BUILDING_MAP } from './data.js';
-import { buildPlant, buildBuilding, buildWallPlant, BUILD_SPEC, warnSprite, mat, WATER_PLANTS, STAGE_INDEX } from './models.js';
-import { buildIndex, terrainAt, plantStage, plantStatus, landRect, nextLandCells } from './game.js';
+import { buildPlant, buildBuilding, buildWallPlant, BUILD_SPEC, warnSprite, mat, STAGE_INDEX } from './models.js';
+import { buildIndex, terrainAt, plantStage, plantStatus, landRect, nextLandCells, realmOf } from './game.js';
+
+// Look of each realm: sky, light, water, tiles and the floating base.
+const THEMES = {
+  town: {
+    sky: ['#9fd8ff', '#d9f1ff', '#fff3e6'], hemi: ['#dff1ff', '#ffe6cc', 1.25], sun: ['#fff4e0', 1.9],
+    water: { color: '#3fb0f0', emissive: '#1e7fc0', opacity: 0.93 }, bed: '#4f9fd0',
+    G: ['#93d56c', '#88cc63'], Gm: ['#6fc25f', '#68ba58'], S: ['#f6dfaa', '#f0d79c'], Sm: ['#e3c98e', '#ddc285'],
+    base: ['#c99566', '#a9764d', '#8c6142', '#9b6e4a'], cloud: '#ffffff', life: false,
+  },
+  forest: {
+    sky: ['#9fdcb8', '#e0f4dc', '#fff4dc'], hemi: ['#e6ffe8', '#e8d9b0', 1.2], sun: ['#fff1cc', 1.75],
+    water: { color: '#2fb5a5', emissive: '#0f7f74', opacity: 0.92 }, bed: '#2f8f86',
+    G: ['#5fae4e', '#57a548'], Gm: ['#4a9a44', '#44913e'], S: ['#ddd6c3', '#d3cbb5'], Sm: ['#c5bea6', '#bdb59c'],
+    base: ['#8a5a3a', '#6e4630', '#5a3826', '#6f6a5a'], cloud: '#effff0', life: false,
+  },
+  sea: {
+    sky: ['#9be8f7', '#2fa6d6', '#0e4f8f'], hemi: ['#c8f6ff', '#1d5f8f', 1.35], sun: ['#d6fbff', 1.6],
+    water: { color: '#123a7a', emissive: '#0a2a6a', opacity: 0.86 }, bed: '#0a1f45',
+    G: ['#8f9bb3', '#8693ab'], Gm: ['#7a86a3', '#73809c'], S: ['#f2e2b8', '#ead9ad'], Sm: ['#dccb9c', '#d4c393'],
+    base: ['#cdb88a', '#a8936a', '#8a7756', '#8f8f9a'], cloud: '#ffffff', life: true,
+  },
+};
+const plantBaseY = (sp) => (sp.float ? WATER_Y : sp.sink ? -0.3 : 0);
 
 const WATER_Y = -0.08;
 const H = GRID / 2;
@@ -44,7 +67,8 @@ export class CityScene {
     this.canvas = this.renderer.domElement;
 
     this.scene = new THREE.Scene();
-    this.scene.background = this.skyTexture();
+    this.skies = {};
+    this.themeId = null;
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     this.target = new THREE.Vector3(0, 0, 0);
     this.targetGoal = this.target.clone();
@@ -54,7 +78,9 @@ export class CityScene {
 
     const hemi = new THREE.HemisphereLight('#dff1ff', '#ffe6cc', 1.25);
     this.scene.add(hemi);
+    this.hemi = hemi;
     const sun = new THREE.DirectionalLight('#fff4e0', 1.9);
+    this.sun = sun;
     sun.position.set(-6, 12, 8);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -72,6 +98,7 @@ export class CityScene {
     this.fx = new THREE.Group(); this.world.add(this.fx);
     this.markers = new THREE.Group(); this.world.add(this.markers);
     this.clouds = new THREE.Group(); this.scene.add(this.clouds);
+    this.seaLife = new THREE.Group(); this.scene.add(this.seaLife);
 
     this.nodes = new Map(); // id -> { obj, sig }
     this.tileMeshes = [];
@@ -84,6 +111,8 @@ export class CityScene {
 
     this.buildIsland();
     this.buildClouds();
+    this.buildSeaLife();
+    this.setTheme('town');
     this.bindInput();
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -92,11 +121,25 @@ export class CityScene {
     requestAnimationFrame(this.loop);
   }
 
-  skyTexture() {
+  setTheme(id) {
+    if (this.themeId === id) return;
+    this.themeId = id;
+    const th = this.theme = THEMES[id] || THEMES.town;
+    this.skies[id] ||= this.skyTexture(th.sky);
+    this.scene.background = this.skies[id];
+    this.hemi.color.set(th.hemi[0]); this.hemi.groundColor.set(th.hemi[1]); this.hemi.intensity = th.hemi[2];
+    this.sun.color.set(th.sun[0]); this.sun.intensity = th.sun[1];
+    this.waterMat.color.set(th.water.color); this.waterMat.emissive.set(th.water.emissive); this.waterMat.opacity = th.water.opacity;
+    this.cloudMat.color.set(th.cloud); this.cloudMat.emissive.set(th.cloud);
+    this.clouds.visible = !th.life;
+    this.seaLife.visible = th.life;
+  }
+
+  skyTexture(stops = THEMES.town.sky) {
     const cv = document.createElement('canvas'); cv.width = 4; cv.height = 256;
     const x = cv.getContext('2d');
     const gr = x.createLinearGradient(0, 0, 0, 256);
-    gr.addColorStop(0, '#9fd8ff'); gr.addColorStop(0.55, '#d9f1ff'); gr.addColorStop(1, '#fff3e6');
+    gr.addColorStop(0, stops[0]); gr.addColorStop(0.55, stops[1]); gr.addColorStop(1, stops[2]);
     x.fillStyle = gr; x.fillRect(0, 0, 4, 256);
     const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
     return t;
@@ -135,7 +178,7 @@ export class CityScene {
   // (Re)build the open land, the preview of the next expansion and the floating soil base.
   rebuildLand(state) {
     const rect = landRect(state);
-    const key = `${(state.terrain || []).join('')}|${rect.join(',')}`;
+    const key = `${realmOf(state)}:${(state.terrain || []).join('')}|${rect.join(',')}`;
     if (key === this.landKey) return;
     const grew = this.landLevel != null && state.landLevel > this.landLevel && this.landKey && this.landKey.split('|')[0] === key.split('|')[0];
     const oldRect = this.rect;
@@ -154,7 +197,7 @@ export class CityScene {
         const c = cellCenter(x, z);
         const cell = new THREE.Group();
         if (t === 'W') {
-          const bed = new THREE.Mesh(this.bedGeo, mat('#4f9fd0'));
+          const bed = new THREE.Mesh(this.bedGeo, mat(this.theme.bed));
           bed.position.set(c.x, -0.42, c.z); bed.receiveShadow = true; cell.add(bed);
           const w = new THREE.Mesh(this.waterGeo, this.waterMat);
           w.position.set(c.x, WATER_Y - 0.05, c.z); w.receiveShadow = true;
@@ -192,12 +235,13 @@ export class CityScene {
       const m = new THREE.Mesh(new RoundedBoxGeometry(ww, h, dd, 3, Math.min(r, ww / 2 - 0.01, dd / 2 - 0.01, h / 2 - 0.01)), mat(color));
       m.position.set(cx, y, cz); m.receiveShadow = true; this.tiles.add(m);
     };
-    slab(w + 0.2, 0.7, d + 0.2, -0.62, '#c99566', 0.25);
-    slab(w - 0.6, 0.6, d - 0.6, -1.15, '#a9764d', 0.25);
-    if (w > 2 && d > 2) slab(w - 2.2, 0.5, d - 2.2, -1.55, '#8c6142', 0.22);
+    const bc = this.theme.base;
+    slab(w + 0.2, 0.7, d + 0.2, -0.62, bc[0], 0.25);
+    slab(w - 0.6, 0.6, d - 0.6, -1.15, bc[1], 0.25);
+    if (w > 2 && d > 2) slab(w - 2.2, 0.5, d - 2.2, -1.55, bc[2], 0.22);
     const rocks = Math.max(2, Math.round((w + d) / 4));
     for (let i = 0; i < rocks; i++) {
-      const r = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22 + (i % 3) * 0.08, 0), mat('#9b6e4a', { flatShading: true }));
+      const r = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22 + (i % 3) * 0.08, 0), mat(bc[3], { flatShading: true }));
       const k = rocks === 1 ? 0.5 : i / (rocks - 1);
       r.position.set(cx + (k - 0.5) * (w - 1) * 0.7, -1.7 - (i % 2) * 0.3 - (w > 2 ? 0.2 : 0), cz + ((i % 3) - 1) * (d - 1) * 0.2);
       this.tiles.add(r);
@@ -212,17 +256,17 @@ export class CityScene {
     for (const m of this.tileMeshes) {
       const { x, z, terrain } = m.userData;
       if (!terrain) continue;
+      m.visible = !idx.pond.has(`${x},${z}`); // a pond / cenote shows its water instead of the ground
       const moist = idx.moist.has(`${x},${z}`);
       const alt = (x + z) % 2 === 0;
-      let col;
-      if (terrain === 'S') col = moist ? (alt ? '#e3c98e' : '#ddc285') : (alt ? '#f6dfaa' : '#f0d79c');
-      else col = moist ? (alt ? '#6fc25f' : '#68ba58') : (alt ? '#93d56c' : '#88cc63');
-      m.material = mat(col);
+      const th = this.theme;
+      const pal = terrain === 'S' ? (moist ? th.Sm : th.S) : (moist ? th.Gm : th.G);
+      m.material = mat(alt ? pal[0] : pal[1]);
     }
   }
 
   buildClouds() {
-    const cm = mat('#ffffff', { roughness: 1, emissive: '#ffffff', emissiveIntensity: 0.45 });
+    const cm = this.cloudMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, emissive: '#ffffff', emissiveIntensity: 0.45 });
     for (let i = 0; i < 5; i++) {
       const g = new THREE.Group();
       const n = 3 + (i % 3);
@@ -236,8 +280,31 @@ export class CityScene {
     }
   }
 
+  // bubbles and little fish for the undersea realm
+  buildSeaLife() {
+    const bm = new THREE.MeshStandardMaterial({ color: '#e6fbff', transparent: true, opacity: 0.55, roughness: 0.1 });
+    const bg = new THREE.SphereGeometry(0.08, 10, 8);
+    for (let i = 0; i < 26; i++) {
+      const b = new THREE.Mesh(bg, bm);
+      b.scale.setScalar(0.5 + Math.random());
+      b.userData = { bubble: { x: (Math.random() - 0.5) * 16, z: (Math.random() - 0.5) * 16, phase: Math.random(), speed: 0.05 + Math.random() * 0.06 } };
+      this.seaLife.add(b);
+    }
+    const colors = [['#ffb347', '#ffffff'], ['#6fd3ff', '#ffe066'], ['#ff8fb1', '#ffffff'], ['#b59cff', '#ffe066']];
+    for (let i = 0; i < 5; i++) {
+      const f = new THREE.Group();
+      const [c1, c2] = colors[i % colors.length];
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), mat(c1)); body.scale.set(1.6, 1, 0.6); f.add(body);
+      const tail = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.18, 6), mat(c2)); tail.rotation.z = Math.PI / 2; tail.position.x = -0.3; f.add(tail);
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), mat('#1a1a2a')); eye.position.set(0.16, 0.04, 0.08); f.add(eye);
+      f.userData = { fish: { r: 5.5 + i * 0.9, y: 0.8 + (i % 3) * 0.9, speed: 0.18 + i * 0.03, phase: i * 1.3, dir: i % 2 ? 1 : -1 } };
+      this.seaLife.add(f);
+    }
+  }
+
   /* --------------------------------------------------------- sync */
   sync(state, now) {
+    this.setTheme(realmOf(state));
     this.state = state;
     this.refreshTiles(state);
     const seen = new Set();
@@ -282,7 +349,7 @@ export class CityScene {
         }
       } else {
         pos = cellCenter(p.x, p.z, sp.size);
-        if (WATER_PLANTS.has(p.species)) pos.y = WATER_Y;
+        pos.y = plantBaseY(sp);
         sig += `|${p.x},${p.z}`;
         const node = this.nodes.get(p.id);
         if (!node || node.sig !== sig) {
@@ -314,7 +381,8 @@ export class CityScene {
   collectAnimated() {
     this.animated = [];
     this.objects.traverse((o) => {
-      if (o.userData.spin || o.userData.orbit || o.userData.bob || o.userData.drip || o.userData.fall) this.animated.push(o);
+      const u = o.userData;
+      if (u.spin || u.orbit || u.bob || u.drip || u.fall || u.sway || u.rise || u.flicker) this.animated.push(o);
     });
   }
 
@@ -540,7 +608,7 @@ export class CityScene {
     } else {
       const c = cellCenter(spot.x, spot.z, size);
       obj.position.copy(c);
-      if (spec.type === 'plant' && WATER_PLANTS.has(spec.plant.species)) obj.position.y = WATER_Y;
+      if (spec.type === 'plant') obj.position.y = plantBaseY(PLANT_MAP[spec.plant.species]);
       const pad = new THREE.Mesh(new THREE.PlaneGeometry(size - 0.06, size - 0.06), new THREE.MeshBasicMaterial({ color: valid ? '#3cf08a' : '#ff5a5a', transparent: true, opacity: 0.55, depthWrite: false }));
       pad.rotation.x = -Math.PI / 2; pad.position.set(c.x, 0.04, c.z);
       g.add(pad);
@@ -628,6 +696,13 @@ export class CityScene {
       if (u.bob) o.scale.y = 1.8 * 0.08 * (1 + Math.sin(t * 6) * 0.15);
       if (u.drip) { const k = (t * 0.8 + u.drip.phase) % 1; o.position.set(Math.cos(u.drip.a) * (0.32 + k * 0.25), 0.62 - k * k * 0.45, Math.sin(u.drip.a) * (0.32 + k * 0.25)); }
       if (u.fall) { o.position.y -= dt * u.fall; if (o.position.y < 0.02) o.position.y = 0.5; }
+      if (u.sway) o.rotation.z = Math.sin(t * u.sway.speed + u.sway.phase) * u.sway.amp;
+      if (u.rise) {
+        const k = (t * u.rise.speed + u.rise.phase) % 1;
+        o.position.y = u.rise.down ? u.rise.from - (u.rise.from - u.rise.to) * k : u.rise.from + (u.rise.to - u.rise.from) * k;
+        if (u.rise.wobble) o.position.x = Math.sin(t * 3 + u.rise.phase * 6) * u.rise.wobble;
+      }
+      if (u.flicker) { const b = u.flicker.base; o.scale.set(b.x * (1 + Math.sin(t * 19) * 0.08), b.y * (1 + Math.sin(t * 13) * 0.12), b.z * (1 + Math.sin(t * 17) * 0.08)); }
     }
     for (let i = this.rising.length - 1; i >= 0; i--) {
       const r = this.rising[i];
@@ -642,6 +717,13 @@ export class CityScene {
     for (const g of this.ghostTiles) g.position.y = -0.06 + Math.sin(t * 1.6 + g.userData.phase) * 0.04;
     for (const s of this.markers.children) {
       s.position.y = s.userData.base + Math.abs(Math.sin(t * (s.userData.urgent ? 6 : 3.5))) * 0.12;
+    }
+    if (this.seaLife.visible) {
+      for (const o of this.seaLife.children) {
+        const b = o.userData.bubble; const f = o.userData.fish;
+        if (b) { const k = (t * b.speed + b.phase) % 1; o.position.set(b.x + Math.sin(t + b.phase * 9) * 0.3, -2.5 + k * 9, b.z); }
+        if (f) { const a = t * f.speed * f.dir + f.phase; o.position.set(Math.cos(a) * f.r, f.y + Math.sin(t * 1.3 + f.phase) * 0.2, Math.sin(a) * f.r); o.rotation.y = -a - (f.dir > 0 ? Math.PI / 2 : -Math.PI / 2); }
+      }
     }
     for (const c of this.clouds.children) {
       const u = c.userData; u.a += dt * u.speed;
@@ -713,7 +795,8 @@ export function thumbnail(kind, id) {
   const g = new THREE.Group();
   if (kind === 'building') {
     const def = BUILDING_MAP[id];
-    const base = new THREE.Mesh(new RoundedBoxGeometry(def.size + 0.1, 0.12, def.size + 0.1, 2, 0.05), mat(def.placeOn === 'river' ? '#56bdf5' : '#9bd77a'));
+    const th = THEMES[def.realm || 'town'];
+    const base = new THREE.Mesh(new RoundedBoxGeometry(def.size + 0.1, 0.12, def.size + 0.1, 2, 0.05), mat(def.placeOn === 'river' || def.pond ? th.water.color : def.realm === 'sea' ? th.S[0] : th.G[0]));
     base.position.y = -0.06; g.add(base);
     g.add(buildBuilding(id));
   } else if (kind === 'seed') {
@@ -726,12 +809,18 @@ export function thumbnail(kind, id) {
     const stage = sp.bloom ? 'bloom' : sp.fruit ? 'fruit' : 'mature';
     const info = { species: id, stage, leaves: 10, perfectDays: 0, seed: 'thumb' + id };
     if (sp.kind === 'wall') {
-      const wall = new THREE.Mesh(new RoundedBoxGeometry(0.9, 0.9, 0.3, 2, 0.04), mat('#fff1d6'));
+      const wall = new THREE.Mesh(new RoundedBoxGeometry(0.9, 0.9, 0.3, 2, 0.04), mat({ town: '#fff1d6', forest: '#e0d7bb', sea: '#f5fbff' }[sp.realm || 'town']));
       wall.position.y = 0.45; g.add(wall);
       const p = buildWallPlant(info, 0.86, 0.86); p.position.set(0, 0.45, 0.17); g.add(p);
     } else {
       const water = sp.habitat.includes('water') || sp.habitat.includes('pond');
-      const base = new THREE.Mesh(new RoundedBoxGeometry(sp.size + 0.1, 0.12, sp.size + 0.1, 2, 0.05), mat(water ? '#56bdf5' : sp.habitat.includes('sand') || sp.habitat.includes('oasis') ? '#f3d9a4' : sp.habitat.includes('dry') ? '#c9d98a' : '#9bd77a'));
+      const th = THEMES[sp.realm || 'town'];
+      const h = sp.habitat;
+      const col = water ? (sp.realm === 'sea' ? '#1d4f8f' : th.water.color)
+        : h.includes('sand') || h.includes('oasis') ? th.S[0]
+          : sp.realm === 'town' && h.includes('dry') ? '#c9d98a'
+            : h.includes('shore') ? th.Gm[0] : th.G[0];
+      const base = new THREE.Mesh(new RoundedBoxGeometry(sp.size + 0.1, 0.12, sp.size + 0.1, 2, 0.05), mat(col));
       base.position.y = -0.06; g.add(base);
       g.add(buildPlant(info));
     }
